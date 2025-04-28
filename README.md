@@ -1,96 +1,83 @@
-# FAPI Client Python Implementation
+# FAPI Client Project
 
-This project implements a FAPI (Financial-grade API) client in Python, suitable for use with the FAPI Conformance Test Suite.
+This project is a TypeScript implementation of a Financial-grade API (FAPI) client, supporting OAuth2/OpenID Connect flows with advanced features such as pushed authorization requests (PAR), mutual TLS, and refresh token handling.
 
-## Overview
+## Setup
 
-The Financial-grade API (FAPI) is a technical specification for financial services APIs that require high security. This implementation provides a client that can interact with FAPI-compliant servers and pass the FAPI conformance tests.
-
-## Features
-
-- Full implementation of FAPI client functionality
-- Support for mTLS (mutual TLS)
-- JWT signing with PKCS#1 and PKCS#8 private keys
-- JWKS (JSON Web Key Set) handling with private key components
-- Pushed Authorization Requests (PAR)
-- Request Object signing
-- Account consent requests
-- Authorization code flow
-- Client credentials flow
-
-## Requirements
-
-- Python 3.8+
-- Required packages listed in `requirements.txt`
-
-## Installation
-
-1. Clone this repository
-2. Install the required packages:
+1. Install dependencies:
 
 ```bash
-pip install -r requirements.txt
+npm install
 ```
 
-3. Make sure you have the necessary certificates in the `certs/` directory:
-   - `client.crt` - Client certificate for mTLS
-   - `client.key` - Client key for mTLS
-   - `signin-key-Seen Tarbi for Fintech-seen-tarbee-corporate.pem` - Signing key for JWTs
-
-## Usage
-
-### Basic Setup
-
-```python
-from fapi_client import FAPIClient
-
-config = {
-    'client_id': 'your-client-id',
-    'client_secret': 'your-client-secret',
-    'token_endpoint': 'https://example.com/token',
-    'par_endpoint': 'https://example.com/par',
-    'issuer': 'https://example.com',
-    'redirect_uri': 'https://your-app.com/callback',
-    'cert_path': 'path/to/client.crt',
-    'key_path': 'path/to/client.key',
-    'signing_key_path': 'path/to/signing-key.pem'
-}
-
-client = FAPIClient(config)
-client.set_requested_scopes(['openid', 'accounts'])
-```
-
-### Complete Flow
-
-To execute a complete authorization flow:
+2. Build the project:
 
 ```bash
-python main.py
+npm run build
 ```
 
-This will:
-1. Create an account consent request
-2. Create and submit a pushed authorization request
-3. Generate an authorization URL
-4. Make the authorization request
-5. Handle the response or redirect
+## Running Tests
 
-## Components
+The main test entry point is `src/index.ts`, which includes various conformance tests.
 
-- `fapi_client.py` - The main FAPI client implementation
-- `main.py` - Example script demonstrating usage of the FAPI client
-- `requirements.txt` - Required Python packages
-- `certs/` - Directory for certificates and keys
+### Running the Refresh Token Flow Test
 
-## Advantages over Node.js Implementation
+This test performs the full authorization code flow, exchanges the authorization code for tokens, and tests refresh token handling.
 
-The Python implementation offers several advantages:
-1. Better cryptography support with the `cryptography` and `jose` libraries
-2. Simpler handling of JWKs and private key components
-3. More comprehensive error handling
-4. Better handling of different key formats (PKCS#1 and PKCS#8)
-5. Improved logging and debugging capabilities
+Run the test with:
+
+```bash
+node dist/index.js refresh-token <discoveryUrl> <resourceEndpoint>
+```
+
+Replace `<discoveryUrl>` and `<resourceEndpoint>` with the appropriate URLs for your environment.
+
+### Testing with a Redirect URL Directly
+
+If you have a redirect URL containing an authorization code (e.g., obtained manually or from a browser), you can test the token exchange directly:
+
+1. Open `src/index.ts`.
+
+2. Locate the `testRefreshTokenFlow` function.
+
+3. Uncomment the example lines near the top of the function that look like this:
+
+```typescript
+/*
+const redirectUrl = 'https://localhost.emobix.co.uk:8443/test/a/ais-corporate/callback?code=YOUR_AUTH_CODE&state=xyz';
+console.log('Using provided redirect URL:', redirectUrl);
+const tokenResponse = await client.handleRedirectUrlAndExchangeCode(redirectUrl);
+console.log('Token response:', tokenResponse);
+return; // Exit early since we are testing direct redirect URL handling
+*/
+```
+
+4. Replace the `redirectUrl` string with your actual redirect URL.
+
+5. Build the project again if needed.
+
+6. Run the test script without parameters:
+
+```bash
+node dist/index.js refresh-token
+```
+
+The test will use the provided redirect URL to exchange the authorization code for tokens and output the result.
+
+## Notes
+
+- The project requires Node.js and npm.
+
+- Certificates and keys for mutual TLS should be placed in the `src/certs` directory as configured in `src/index.ts`.
+
+- The client configuration is set in `src/index.ts` in the `main` function.
+
+## Scripts
+
+- `npm run build` - Compile TypeScript to JavaScript.
+
+- `npm start` - Run the main test script (after build).
 
 ## License
 
-ISC License 
+MIT License
