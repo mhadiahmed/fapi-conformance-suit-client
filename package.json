@@ -1,0 +1,31 @@
+{
+  "name": "fapi",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "copy-certs": "mkdir -p dist/certs && cp -r src/certs/* dist/certs/",
+    "build": "tsc && npm run copy-certs",
+    "start": "npm run build && node dist/index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "@types/express": "^5.0.1",
+    "@types/jest": "^29.5.14",
+    "@types/node": "^22.14.1",
+    "jest": "^29.7.0",
+    "openid-client": "^6.4.2",
+    "ts-jest": "^29.3.2",
+    "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "axios": "^1.8.4",
+    "dotenv": "^16.5.0",
+    "express": "^5.1.0"
+  }
+}
