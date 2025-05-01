@@ -9,7 +9,7 @@ const callbackUrl = process.argv[2];
 
 if (!callbackUrl) {
     console.error('Please provide the callback URL as a command line argument');
-    console.error('Example: ts-node src/run-aud-array-test.ts "https://localhost.emobix.co.uk:8443/test/a/ais-corporate/callback#state=..."');
+    console.error('Example: ts-node src/run-aud-array-test.ts "https://localhost.emobix.co.uk:8443/test/a/seentarbi-ais-corporate/callback#state=..."');
     process.exit(1);
 }
 
@@ -109,10 +109,10 @@ async function runTest() {
         const client = new FAPIClient({
             clientId: clientId,
             clientSecret: process.env.CLIENT_SECRET || 'ae149792-aeb9-40c6-9498-5f64d65262b1',
-            tokenEndpoint: process.env.TOKEN_ENDPOINT || 'https://localhost.emobix.co.uk:8444/test-mtls/a/ais-corporate/token',
-            parEndpoint: process.env.PAR_ENDPOINT || 'https://localhost.emobix.co.uk:8444/test-mtls/a/ais-corporate/par',
-            issuer: process.env.ISSUER || 'https://localhost.emobix.co.uk:8443/test/a/ais-corporate',
-            redirectUri: process.env.REDIRECT_URI || 'https://localhost.emobix.co.uk:8443/test/a/ais-corporate/callback'
+            tokenEndpoint: process.env.TOKEN_ENDPOINT || 'https://localhost.emobix.co.uk:8444/test-mtls/a/seentarbi-ais-corporate/token',
+            parEndpoint: process.env.PAR_ENDPOINT || 'https://localhost.emobix.co.uk:8444/test-mtls/a/seentarbi-ais-corporate/par',
+            issuer: process.env.ISSUER || 'https://localhost.emobix.co.uk:8443/test/a/seentarbi-ais-corporate',
+            redirectUri: process.env.REDIRECT_URI || 'https://localhost.emobix.co.uk:8443/test/a/seentarbi-ais-corporate/callback'
         });
         
         console.log('Validating ID token audience...');
