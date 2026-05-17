@@ -10,7 +10,10 @@
     "build": "tsc && npm run copy-certs",
     "start": "npm run build && node dist/index.js",
     "refresh-token-test": "npm run build && node dist/run-refresh-token-test.js",
-    "encrypted-idtoken-test": "npm run build && node dist/run-encrypted-idtoken-test.js"
+    "encrypted-idtoken-test": "npm run build && node dist/run-encrypted-idtoken-test.js",
+    "cert-logs": "./run-conformance-logs.sh",
+    "cert-logs:fapi": "./run-conformance-logs.sh",
+    "cert-logs:oidcc": "./run-conformance-logs.sh --profile oidcc"
   },
   "keywords": [],
   "author": "",

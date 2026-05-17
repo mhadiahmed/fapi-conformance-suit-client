@@ -6,6 +6,8 @@ import * as https from 'https';
  * This script provides a step-by-step guide to manually test the refresh token flow.
  * It will provide instructions at each step for what needs to be done manually.
  */
+const URLSTREAM = 'https://www.certification.openid.net';
+const URLSTREAM_MTLS = 'https://mtls-www.certification.openid.net';
 async function runManualRefreshTokenTest() {
     console.log('\n========== MANUAL REFRESH TOKEN FLOW TEST ==========\n');
     
@@ -28,13 +30,13 @@ async function runManualRefreshTokenTest() {
         const client = new FAPIClient({
             clientId: '2d4c95a7-6dc3-4416-ab1c-ea44501635aa',
             clientSecret: 'secret-2d4c95a7-6dc3-4416-ab1c-ea44501635aa',
-            tokenEndpoint: 'https://localhost.emobix.co.uk:8444/test-mtls/a/seentarbi-ais-corporate/token',
-            parEndpoint: 'https://localhost.emobix.co.uk:8444/test-mtls/a/seentarbi-ais-corporate/par',
-            redirectUri: 'https://localhost.emobix.co.uk:8443/test/a/seentarbi-ais-corporate/callback',
+            tokenEndpoint: `${URLSTREAM_MTLS}/test-mtls/a/seentarbi-ais-corporate/token`,
+            parEndpoint: `${URLSTREAM_MTLS}/test-mtls/a/seentarbi-ais-corporate/par`,
+            redirectUri: `${URLSTREAM}/test/a/seentarbi-ais-corporate/callback`,
             certPath: './src/certs/client.crt',
             keyPath: './src/certs/client.key',
             signingKeyPath: './src/certs/signin-key-Seen Tarbi for Fintech-seen-tarbee-corporate.pem',
-            issuer: 'https://localhost.emobix.co.uk:8443/test/a/seentarbi-ais-corporate/'
+            issuer: `${URLSTREAM}/test/a/seentarbi-ais-corporate/`
         });
         
         await client.initialize();
@@ -146,7 +148,7 @@ async function runManualRefreshTokenTest() {
         
         // Step 7: Ask for resource endpoint
         console.log('\nStep 7: Calling resource endpoint\n');
-        const resourceEndpoint = await askQuestion('Enter the resource endpoint URL (e.g., https://localhost.emobix.co.uk:8444/test-mtls/a/seentarbi-ais-corporate/accounts/payments/resources): ');
+        const resourceEndpoint = await askQuestion('Enter the resource endpoint URL (e.g., https://https://mtls-www.certification.openid.net/test-mtls/a/seentarbi-ais-corporate/accounts/payments/resources): ');
         
         // Create an HTTPS agent with the correct client certificates
         const fs = require('fs');

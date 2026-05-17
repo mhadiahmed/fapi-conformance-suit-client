@@ -3,6 +3,8 @@ import { FAPIClient } from './fapiClient';
 import * as crypto from 'crypto';
 import * as https from 'https';
 
+const URLSTREAM = 'https://www.certification.openid.net';
+const URLSTREAM_MTLS = 'https://mtls-www.certification.openid.net';
 /**
  * This script directly executes the refresh token flow test in a more controlled way.
  */
@@ -30,14 +32,14 @@ async function runRefreshTokenFlowTest() {
         const client = new FAPIClient({
             clientId: '2d4c95a7-6dc3-4416-ab1c-ea44501635aa',
             clientSecret: 'secret-2d4c95a7-6dc3-4416-ab1c-ea44501635aa',
-            tokenEndpoint: 'https://localhost.emobix.co.uk:8444/test-mtls/a/seentarbi-ais-corporate/token',
-            parEndpoint: 'https://localhost.emobix.co.uk:8444/test-mtls/a/seentarbi-ais-corporate/par',
-            redirectUri: 'https://localhost.emobix.co.uk:8443/test/a/seentarbi-ais-corporate/callback',
+            tokenEndpoint: `${URLSTREAM_MTLS}/test-mtls/a/seentarbi-ais-corporate/token`,
+            parEndpoint: `${URLSTREAM_MTLS}/test-mtls/a/seentarbi-ais-corporate/par`,
+            redirectUri: `${URLSTREAM}/test/a/seentarbi-ais-corporate/callback`,
             certPath: './src/certs/client.crt',
             keyPath: './src/certs/client.key',
             signingKeyPath: './src/certs/signin-key-Seen Tarbi for Fintech-seen-tarbee-corporate.pem',
             // caCertPath: './src/certs/ca.pem',
-            issuer: 'https://localhost.emobix.co.uk:8443/test/a/seentarbi-ais-corporate/'
+            issuer: `${URLSTREAM}/test/a/seentarbi-ais-corporate/`
         });
         
         await client.initialize();
@@ -153,7 +155,7 @@ async function getRedirectUrlFromUser(): Promise<string> {
             } else {
                 // If user just pressed Enter, use a test URL
                 console.log('Using example redirect URL...');
-                resolve('https://localhost.emobix.co.uk:8443/test/a/seentarbi-ais-corporate/callback#state=1234567890&code=AbCdEfGhIjKlMnOpQrStUvWxYz&id_token=eyJhbGciOiJQUzI1NiJ9.eyJzdWIiOiJ1c2VyLXRlc3QiLCJhdWQiOiIyZDRjOTVhNy02ZGMzLTQ0MTYtYWIxYy1lYTQ0NTAxNjM1YWEifQ.signature');
+                resolve(`${URLSTREAM}/test/a/seentarbi-ais-corporate/callback#state=1234567890&code=AbCdEfGhIjKlMnOpQrStUvWxYz&id_token=eyJhbGciOiJQUzI1NiJ9.eyJzdWIiOiJ1c2VyLXRlc3QiLCJhdWQiOiIyZDRjOTVhNy02ZGMzLTQ0MTYtYWIxYy1lYTQ0NTAxNjM1YWEifQ.signature`);
             }
         });
     });

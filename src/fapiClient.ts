@@ -14,6 +14,7 @@ export interface FAPIClientConfig {
 	certPath?: string;
 	keyPath?: string;
 	signingKeyPath?: string;
+	encryptionKeyPath?: string; // Private key for decrypting encrypted ID tokens (JWE)
 	caCertPath?: string;
 	issuer?: string;
 	redirectUri?: string;
@@ -31,6 +32,7 @@ export class FAPIClient {
 	private config: FAPIClientConfig;
 	private expectedNonce: string;
 	private privateKey: string = '';
+	private encryptionKey: string = ''; // Private key for decrypting JWE tokens
 	private keyId: string;
 	private publicKey: string = '';
 	private consentId: string | null = null;
@@ -38,22 +40,25 @@ export class FAPIClient {
 	private authorizationCode: string = '';
 	private codeVerifier: string = '';
 
-	// Update the hardcoded JWKS to match the plan configuration
+	// Update the hardcoded JWKS to match the plan configuration (CLIENT's JWKS)
 	private readonly jwks = {
 		kty: "RSA",
 		use: "sig",
 		alg: "PS256",
-		kid: "f4706d18-bf16-43ce-b181-90b4128ca215",
+		kid: "sig1", // Match the configured keyId
 		n: "yGe4w2jmnE6xk5vnPeQfhglfYGTUOKWVY1gp6ce02k577weu5hXb2DPdiYDrsxsH1gGfDRURMAdBF4CtH9l2B6cdJTUIyV7AuUO8BaiYc3VL-v0vhiCIntEXnFO_pZdWydX0ZFBHX80WdyH5E0PovGj0NXyQzaZtO2KMElbEpG8iGMGFtqiSvmOQqT0wyWdhbJ8sbxgj4_CCh-U6hly3xepWJCQyb4a2ULiaGVY4dvTKvc2wHyWT7uZ67jZHrXEqJ3QbaFI1XrU6U66AX4TuMzrVNjMyEiGX3_1LlfMnEVA-AYYOdSuUTx7DR3gaHhi8jSAbk-kg4MCVq2CSwFLUjw",
 		e: "AQAB"
 	};
+
+	// SERVER's JWKS (authorization server's public keys for validating ID tokens)
+	private serverJwks: any = null;
 
 	// Static private JWK for testing
 	private readonly fullPrivateJwk = {
 		"kty": "RSA",
 		"use": "sig",
 		"alg": "PS256",
-		"kid": "f4706d18-bf16-43ce-b181-90b4128ca215",
+		"kid": "sig1", // Match the configured keyId
 		"n": "yGe4w2jmnE6xk5vnPeQfhglfYGTUOKWVY1gp6ce02k577weu5hXb2DPdiYDrsxsH1gGfDRURMAdBF4CtH9l2B6cdJTUIyV7AuUO8BaiYc3VL-v0vhiCIntEXnFO_pZdWydX0ZFBHX80WdyH5E0PovGj0NXyQzaZtO2KMElbEpG8iGMGFtqiSvmOQqT0wyWdhbJ8sbxgj4_CCh-U6hly3xepWJCQyb4a2ULiaGVY4dvTKvc2wHyWT7uZ67jZHrXEqJ3QbaFI1XrU6U66AX4TuMzrVNjMyEiGX3_1LlfMnEVA-AYYOdSuUTx7DR3gaHhi8jSAbk-kg4MCVq2CSwFLUjw",
 		"e": "AQAB",
 		// Add these private key components
@@ -89,12 +94,8 @@ export class FAPIClient {
 			throw new Error('issuer is required');
 		}
 
-		// Ensure issuer URL matches the authorization endpoint
-		const expectedIssuer = 'https://localhost.emobix.co.uk:8443/test/a/seentarbi-ais-corporate';
-		if (this.config.issuer !== expectedIssuer) {
-			console.warn(`Issuer URL does not match expected authorization endpoint. Updating from ${this.config.issuer} to ${expectedIssuer}`);
-			this.config.issuer = expectedIssuer;
-		}
+		// Use the issuer from the configuration
+		console.log('Using issuer:', this.config.issuer);
 
 		// Set up mTLS with client.key
 		if (config.certPath && config.keyPath) {
@@ -147,6 +148,37 @@ export class FAPIClient {
 			}
 		} else {
 			console.warn('No signing key provided. JWT signing will not be available.');
+		}
+
+		// Load encryption key for decrypting JWE tokens (if provided)
+		if (config.encryptionKeyPath) {
+			try {
+				console.log('Loading encryption key from:', config.encryptionKeyPath);
+				const encKeyContent = fs.readFileSync(config.encryptionKeyPath, 'utf8');
+
+				// Check key format
+				const isPKCS1 = encKeyContent.includes('-----BEGIN RSA PRIVATE KEY-----');
+				const isPKCS8 = encKeyContent.includes('-----BEGIN PRIVATE KEY-----');
+
+				if (!isPKCS1 && !isPKCS8) {
+					throw new Error('Invalid encryption key format. Expected PEM format (PKCS#1 or PKCS#8)');
+				}
+
+				console.log('Encryption key format detected:', isPKCS1 ? 'PKCS#1' : 'PKCS#8');
+
+				// Test the key can be imported
+				crypto.createPrivateKey({
+					key: encKeyContent,
+					format: 'pem'
+				});
+
+				this.encryptionKey = encKeyContent;
+				console.log('Successfully loaded encryption key for JWE decryption');
+
+			} catch (error) {
+				console.error('Error loading encryption key:', error);
+				throw new Error('Failed to load encryption key: ' + error);
+			}
 		}
 
 		// Log JWKS information
@@ -305,11 +337,11 @@ export class FAPIClient {
 		try {
 			console.log('Signing JWT with algorithm PS256');
 
-			// Use the hardcoded kid for JWKS matching
+			// Use the configured kid for JWKS matching
 			const header = {
 				alg: 'PS256',
 				typ: isRequestObject ? 'oauth-authz-req+jwt' : 'JWT',
-				kid: 'f4706d18-bf16-43ce-b181-90b4128ca215', // Use the same kid as in the jwks configuration
+				kid: this.config.keyId || 'sig1', // Use the configured keyId
 				kty: 'RSA',
 				use: 'sig',
 			};
@@ -392,7 +424,7 @@ export class FAPIClient {
 		const now = Math.floor(Date.now() / 1000);
 		const payload = {
 			iss: this.clientId,
-			aud: "https://localhost.emobix.co.uk:8443/test/a/seentarbi-ais-corporate/",
+			aud: this.config.issuer, // Use the configured issuer as the audience
 			iat: now,
 			exp: now + 600,
 			nbf: now,
@@ -466,19 +498,29 @@ export class FAPIClient {
 	public async getClientCredentialsToken(): Promise<any> {
 		this.logConformanceTestInteraction('Requesting client credentials token with scopes:', this.requestedScopes);
 
+		if (!this.config.issuer) {
+			throw new Error('Issuer must be configured for private_key_jwt authentication');
+		}
+
 		const params = new URLSearchParams();
 		params.append('grant_type', 'client_credentials');
 		params.append('client_id', this.clientId);
 		params.append('scope', this.requestedScopes.join(' '));
 
-		const authHeader = Buffer.from(`${this.clientId}:${this.clientSecret}`).toString('base64');
+		// Use private_key_jwt client assertion with issuer as audience (per FAPI spec)
+		const clientAssertion = this.createClientAssertion(this.config.issuer);
+		if (!clientAssertion) {
+			throw new Error('Failed to create client assertion for private_key_jwt authentication');
+		}
+
+		params.append('client_assertion_type', 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer');
+		params.append('client_assertion', clientAssertion);
 
 		const config: AxiosRequestConfig = {
 			method: 'post',
 			url: this.tokenEndpoint,
 			headers: {
 				'Content-Type': 'application/x-www-form-urlencoded',
-				'Authorization': `Basic ${authHeader}`,
 				'Accept': 'application/json'
 			},
 			data: params,
@@ -527,6 +569,10 @@ export class FAPIClient {
 			code: code ? code.substring(0, 5) + '...' : undefined
 		});
 
+		if (!this.config.issuer) {
+			throw new Error('Issuer must be configured for private_key_jwt authentication');
+		}
+
 		const params = new URLSearchParams();
 		params.append('grant_type', 'authorization_code');
 		params.append('code', code);
@@ -535,14 +581,20 @@ export class FAPIClient {
 		params.append('code_verifier', this.codeVerifier);
 		params.append('scope', 'accounts');
 
-		const authHeader = Buffer.from(`${this.clientId}:${this.clientSecret}`).toString('base64');
+		// Use private_key_jwt client assertion with issuer as audience (per FAPI spec)
+		const clientAssertion = this.createClientAssertion(this.config.issuer);
+		if (!clientAssertion) {
+			throw new Error('Failed to create client assertion for private_key_jwt authentication');
+		}
+
+		params.append('client_assertion_type', 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer');
+		params.append('client_assertion', clientAssertion);
 
 		const config: AxiosRequestConfig = {
 			method: 'post',
 			url: this.tokenEndpoint,
 			headers: {
 				'Content-Type': 'application/x-www-form-urlencoded',
-				'Authorization': `Basic ${authHeader}`,
 				'Accept': 'application/json'
 			},
 			data: params,
@@ -678,7 +730,14 @@ export class FAPIClient {
 			throw new Error('Issuer must be configured');
 		}
 
-		const consentEndpoint = 'https://localhost.emobix.co.uk:8444/test-mtls/a/seentarbi-ais-corporate/open-banking/v1.1/account-requests';
+		// Extract the test alias from the issuer URL to construct the consent endpoint
+		// issuer format: https://localhost.emobix.co.uk:8443/test/a/{alias}
+		const issuerMatch = this.config.issuer.match(/\/test\/a\/([^\/]+)/);
+		if (!issuerMatch) {
+			throw new Error(`Cannot extract test alias from issuer: ${this.config.issuer}`);
+		}
+		const testAlias = issuerMatch[1];
+		const consentEndpoint = `https://mtls-www.certification.openid.net/test-mtls/a/${testAlias}/open-banking/v1.1/account-requests`;
 
 		const data = {
 			Data: {
@@ -861,31 +920,46 @@ export class FAPIClient {
 				throw error;
 			}
 
-			// For PS256, we need the RSA-PSS padding
-			if (header.alg !== 'PS256') {
-				const error = new Error('Unsupported signature algorithm');
-				console.error(error.message, { algorithm: header.alg });
-				throw error;
-			}
+		// For PS256, we need the RSA-PSS padding
+		if (header.alg !== 'PS256') {
+			const error = new Error('Unsupported signature algorithm');
+			console.error(error.message, { algorithm: header.alg });
+			throw error;
+		}
 
-			// We need a valid public key to verify the signature
-			if (!this.jwks.n || !this.jwks.e) {
-				const error = new Error('Missing public key components');
-				console.error(error.message);
-				throw error;
-			}
+		// Find the server's public key for this ID token
+		if (!this.serverJwks || !this.serverJwks.keys || this.serverJwks.keys.length === 0) {
+			const error = new Error('Server JWKS not loaded. Call fetchServerJwks() first.');
+			console.error(error.message);
+			throw error;
+		}
 
-			// Get the signing input (header.payload)
-			const signingInput = `${headerBase64}.${payloadBase64}`;
+		// Find the key with the matching kid
+		const serverKey = this.serverJwks.keys.find((key: any) => key.kid === header.kid);
+		if (!serverKey) {
+			const error = new Error(`No server key found with kid: ${header.kid}`);
+			console.error(error.message);
+			throw error;
+		}
 
-			// Decode the signature
-			const signature = Buffer.from(signatureBase64, 'base64url');
+		// We need a valid public key to verify the signature
+		if (!serverKey.n || !serverKey.e) {
+			const error = new Error('Missing public key components in server JWKS');
+			console.error(error.message);
+			throw error;
+		}
 
-			// Create a public key from the JWKS
-			const jwk = {
-				kty: this.jwks.kty,
-				n: this.jwks.n,
-				e: this.jwks.e
+		// Get the signing input (header.payload)
+		const signingInput = `${headerBase64}.${payloadBase64}`;
+
+		// Decode the signature
+		const signature = Buffer.from(signatureBase64, 'base64url');
+
+		// Create a public key from the server's JWKS
+		const jwk = {
+				kty: serverKey.kty,
+				n: serverKey.n,
+				e: serverKey.e
 			};
 
 			// Convert JWK to PEM format public key
@@ -929,6 +1003,38 @@ export class FAPIClient {
 		return this.fullPrivateJwk;
 	}
 
+	// Fetch the authorization server's JWKS for validating ID tokens
+	public async fetchServerJwks(): Promise<void> {
+		if (!this.config.discoveryUrl) {
+			console.warn('No discovery URL configured, cannot fetch server JWKS');
+			return;
+		}
+
+		try {
+			console.log('Fetching OpenID discovery document from:', this.config.discoveryUrl);
+			const discoveryResponse = await axios.get(this.config.discoveryUrl, {
+				httpsAgent: this.httpsAgent
+			});
+
+			const jwksUri = discoveryResponse.data.jwks_uri;
+			if (!jwksUri) {
+				console.warn('No jwks_uri in discovery document');
+				return;
+			}
+
+			console.log('Fetching server JWKS from:', jwksUri);
+			const jwksResponse = await axios.get(jwksUri, {
+				httpsAgent: this.httpsAgent
+			});
+
+			this.serverJwks = jwksResponse.data;
+			console.log('Successfully fetched server JWKS with', this.serverJwks.keys?.length || 0, 'keys');
+		} catch (error) {
+			console.error('Failed to fetch server JWKS:', error);
+			throw new Error('Could not fetch server JWKS for ID token validation');
+		}
+	}
+
 	// Method to detect if an ID token is encrypted
 	private isEncryptedToken(token: string): boolean {
 		try {
@@ -959,8 +1065,34 @@ export class FAPIClient {
 		try {
 			console.log('Decrypting encrypted ID token...');
 			
-			// Get the private key
-			const privateKey = await jose.importPKCS8(this.privateKey, 'RS256');
+			// First, check the JWE header for the algorithm
+			const parts = encryptedToken.split('.');
+			if (parts.length !== 5) {
+				throw new Error('Invalid JWE format');
+			}
+			
+			const headerB64 = parts[0];
+			const header = JSON.parse(Buffer.from(headerB64, 'base64url').toString());
+			console.log('JWE Header:', JSON.stringify(header, null, 2));
+			
+			// Check for disallowed algorithms - RSA1_5 is not allowed per FAPI spec
+			const disallowedAlgorithms = ['RSA1_5', 'RSA-PKCS1-v1_5'];
+			if (disallowedAlgorithms.includes(header.alg)) {
+				console.error(`Rejected ID token: encrypted with disallowed algorithm '${header.alg}'`);
+				throw new Error(`ID token encrypted with disallowed algorithm '${header.alg}'. RSA1_5 is not permitted per FAPI security requirements.`);
+			}
+			
+			// Use encryption key if available, otherwise fallback to signing key
+			const keyToUse = this.encryptionKey || this.privateKey;
+			if (!keyToUse) {
+				throw new Error('No private key available for decryption');
+			}
+			
+			console.log('Using', this.encryptionKey ? 'dedicated encryption key' : 'signing key', 'for decryption');
+			console.log('JWE algorithm:', header.alg, '- encryption:', header.enc);
+			
+			// Get the private key for decryption
+			const privateKey = await jose.importPKCS8(keyToUse, 'RSA-OAEP');
 			
 			// Decrypt the token
 			const { plaintext } = await jose.compactDecrypt(encryptedToken, privateKey);
@@ -1049,18 +1181,28 @@ export class FAPIClient {
 			throw new Error('PAR endpoint not configured');
 		}
 
+		if (!this.config.issuer) {
+			throw new Error('Issuer must be configured for private_key_jwt authentication');
+		}
+
 		const params = new URLSearchParams();
 		params.append('request', requestObject);
 		params.append('client_id', this.clientId);
 
-		const authHeader = Buffer.from(`${this.clientId}:${this.clientSecret}`).toString('base64');
+		// Use private_key_jwt client assertion with issuer as audience (per FAPI spec)
+		const clientAssertion = this.createClientAssertion(this.config.issuer);
+		if (!clientAssertion) {
+			throw new Error('Failed to create client assertion for private_key_jwt authentication');
+		}
+
+		params.append('client_assertion_type', 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer');
+		params.append('client_assertion', clientAssertion);
 
 		const config: AxiosRequestConfig = {
 			method: 'post',
 			url: this.parEndpoint,
 			headers: {
 				'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
-				'Authorization': `Basic ${authHeader}`,
 				'Accept': 'application/json'
 			},
 			data: params,
@@ -1190,29 +1332,23 @@ export class FAPIClient {
 
 	public async makeAuthorizationRequest(authUrl: string, requestUri: string): Promise<any> {
 		try {
-			const params = new URLSearchParams();
-			params.append('client_id', this.clientId);
-			params.append('request_uri', requestUri);
-
-			const authHeader = Buffer.from(`${this.clientId}:${this.clientSecret}`).toString('base64');
-
+			// When using PAR, the authorization endpoint should be called with GET
+			// The client_id and request_uri should already be in the authUrl query string
 			const response = await axios({
-				method: 'post',
+				method: 'get',
 				url: authUrl,
 				headers: {
-					'Content-Type': 'application/x-www-form-urlencoded',
-					'Authorization': `Basic ${authHeader}`,
 					'Accept': 'application/json'
 				},
-				data: params,
 				maxRedirects: 0,
 				validateStatus: (status) => {
-					return status === 302 || (status >= 200 && status < 300);
+					return status === 302 || status === 303 || (status >= 200 && status < 300);
 				},
 				httpsAgent: this.httpsAgent
 			});
 
-			if (response.status === 302) {
+			// Check if this is a redirect response (302 or 303)
+			if ((response.status === 302 || response.status === 303) && response.headers.location) {
 				const location = response.headers.location;
 				console.log('Authorization redirect location:', location);
 				return { redirectUrl: location };
@@ -1227,7 +1363,7 @@ export class FAPIClient {
 					data: error.response?.data
 				});
 				// If we got a redirect response, return it
-				if (error.response?.status === 302 && error.response?.headers?.location) {
+				if ((error.response?.status === 302 || error.response?.status === 303) && error.response?.headers?.location) {
 					return { redirectUrl: error.response.headers.location };
 				}
 			}
@@ -2190,6 +2326,7 @@ export class FAPIClient {
 			console.log('Redirect URL:', redirectUrl);
 			
 			let code: string | null = null;
+			let idToken: string | null = null;
 			
 			// Handle both URL query parameters and hash fragments
 			if (redirectUrl.includes('#')) {
@@ -2199,7 +2336,9 @@ export class FAPIClient {
 				console.log('Hash fragment part:', hashPart);
 				const fragmentParams = new URLSearchParams(hashPart);
 				code = fragmentParams.get('code');
+				idToken = fragmentParams.get('id_token');
 				console.log('Extracted code from URL fragment:', code ? code.substring(0, 10) + '...' : 'null');
+				console.log('Extracted id_token from URL fragment:', idToken ? 'present (' + idToken.split('.').length + ' parts)' : 'null');
 				
 				// Validate other parameters
 				const state = fragmentParams.get('state');
@@ -2213,7 +2352,39 @@ export class FAPIClient {
 				// Extract from URL query parameters
 				const urlObj = new URL(redirectUrl);
 				code = urlObj.searchParams.get('code');
+				idToken = urlObj.searchParams.get('id_token');
 				console.log('Extracted code from URL query parameters:', code ? code.substring(0, 10) + '...' : 'null');
+				console.log('Extracted id_token from URL query parameters:', idToken ? 'present (' + idToken.split('.').length + ' parts)' : 'null');
+			}
+			
+			// IMPORTANT: Check for ID token in authorization response BEFORE calling token endpoint
+			// This is required for FAPI compliance - must validate/reject invalid ID tokens before proceeding
+			if (idToken) {
+				console.log('Step 1.5: ID token found in authorization response - validating BEFORE token exchange...');
+				
+				// Check if the ID token is encrypted (JWE has 5 parts)
+				const parts = idToken.split('.');
+				if (parts.length === 5) {
+					console.log('ID token is encrypted (JWE format) - checking encryption algorithm...');
+					
+					// Parse the JWE header to check the algorithm
+					const headerB64 = parts[0];
+					const header = JSON.parse(Buffer.from(headerB64, 'base64url').toString());
+					console.log('JWE Header from authorization response:', JSON.stringify(header, null, 2));
+					
+					// Check for disallowed algorithms - RSA1_5 is not allowed per FAPI spec
+					const disallowedAlgorithms = ['RSA1_5', 'RSA-PKCS1-v1_5'];
+					if (disallowedAlgorithms.includes(header.alg)) {
+						console.error(`REJECTED: ID token in authorization response encrypted with disallowed algorithm '${header.alg}'`);
+						console.error('RSA1_5 (RSA-PKCS1-v1_5) is not permitted per FAPI security requirements.');
+						console.error('Stopping flow - will NOT call token endpoint.');
+						throw new Error(`ID token encrypted with disallowed algorithm '${header.alg}'. RSA1_5 is not permitted per FAPI security requirements.`);
+					}
+					
+					console.log('Encryption algorithm check passed:', header.alg);
+				}
+				
+				console.log('ID token in authorization response validation passed - proceeding to token exchange...');
 			}
 			
 			if (!code) {
@@ -2266,19 +2437,29 @@ export class FAPIClient {
 			token_endpoint: this.tokenEndpoint
 		});
 
+		if (!this.config.issuer) {
+			throw new Error('Issuer must be configured for private_key_jwt authentication');
+		}
+
 		const params = new URLSearchParams();
 		params.append('grant_type', 'refresh_token');
 		params.append('refresh_token', refreshToken);
 		params.append('client_id', this.clientId);
 
-		const authHeader = Buffer.from(`${this.clientId}:${this.clientSecret}`).toString('base64');
+		// Use private_key_jwt client assertion with issuer as audience (per FAPI spec)
+		const clientAssertion = this.createClientAssertion(this.config.issuer);
+		if (!clientAssertion) {
+			throw new Error('Failed to create client assertion for private_key_jwt authentication');
+		}
+
+		params.append('client_assertion_type', 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer');
+		params.append('client_assertion', clientAssertion);
 
 		const config: AxiosRequestConfig = {
 			method: 'post',
 			url: this.tokenEndpoint,
 			headers: {
 				'Content-Type': 'application/x-www-form-urlencoded',
-				'Authorization': `Basic ${authHeader}`,
 				'Accept': 'application/json'
 			},
 			data: params,

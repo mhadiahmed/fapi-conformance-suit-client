@@ -8,6 +8,10 @@ import crypto from 'crypto';
 
 // Declare client variable outside functions for access across test functions
 let client: FAPIClient | null = null;
+let client2: FAPIClient | null = null;
+
+const URLSTREAM = 'https://www.certification.openid.net';
+const URLSTREAM_MTLS = 'https://mtls-www.certification.openid.net';
 
 // Let's add a helper function instead of using Express
 function getJwksAsJson(): string {
@@ -25,39 +29,93 @@ function getJwksAsJson(): string {
     return JSON.stringify(jwksOutput);
 }
 
-async function main() {
+// Helper function to initialize the FAPI client without running any flow
+async function initializeClient(): Promise<FAPIClient> {
     const config: FAPIClientConfig = {
-        clientId: '2d4c95a7-6dc3-4416-ab1c-ea44501635aa',
-        clientSecret: 'ae149792-aeb9-40c6-9498-5f64d65262b1',
-        tokenEndpoint: 'https://localhost.emobix.co.uk:8444/test-mtls/a/seentarbi-ais-corporate/token',
-        parEndpoint: 'https://localhost.emobix.co.uk:8444/test-mtls/a/seentarbi-ais-corporate/par',
-        issuer: 'https://localhost.emobix.co.uk:8443/test/a/seentarbi-ais-corporate',
-        discoveryUrl: 'https://localhost.emobix.co.uk:8443/test/a/seentarbi-ais-corporate/.well-known/openid-configuration',
-        redirectUri: 'https://localhost.emobix.co.uk:8443/test/a/seentarbi-ais-corporate/callback',
-        certPath: path.join(__dirname, 'certs/client.crt'),
-        keyPath: path.join(__dirname, 'certs/client.key'),
-        signingKeyPath: path.join(__dirname, 'certs/signin-key-Seen Tarbi for Fintech-seen-tarbee-corporate.pem')
+        clientId: 'bc680915-bbd3-45d7-b3c6-2716f4d178ed', // Your conformance suite client ID
+        clientSecret: '', // Empty for private_key_jwt
+        tokenEndpoint: `${URLSTREAM_MTLS}/test-mtls/a/ksa-rp-seentarbie/token`, // mTLS endpoint
+        parEndpoint: `${URLSTREAM_MTLS}/test-mtls/a/ksa-rp-seentarbie/par`, // mTLS endpoint
+        issuer: `${URLSTREAM}/test/a/ksa-rp-seentarbie/`, // Note the trailing slash
+        discoveryUrl: `${URLSTREAM}/test/a/ksa-rp-seentarbie/.well-known/openid-configuration`,
+        redirectUri: `${URLSTREAM}/test/a/ksa-rp-seentarbie/callback`,
+        certPath: path.join(__dirname, 'certs/certs.pem'), // Your mTLS certificate
+        keyPath: path.join(__dirname, 'certs/privatekey.key'), // Your mTLS key
+        signingKeyPath: path.join(__dirname, 'certs/private_key.pem'), // JWT signing key for private_key_jwt
+        keyId: 'sig1' // Key ID for JWKS
     };
 
+    const newClient = new FAPIClient(config);
+    
+    // Log the JWKS that should be provided to the conformance test suite
+    console.log('\n==== JWKS FOR CONFORMANCE TEST SUITE ====');
+    console.log('Getting JWKS');
+    const jwk = newClient.getJwks();
+    if (jwk) {
+        const jwksOutput = { keys: [jwk] };
+        console.log('JWKS for test suite:', JSON.stringify(jwksOutput, null, 2));
+    }
+    console.log('========================================\n');
+    
+    // Fetch the server's JWKS for validating ID tokens
+    console.log('Fetching authorization server JWKS...');
+    await newClient.fetchServerJwks();
+    console.log('Authorization server JWKS fetched successfully\n');
+    
+    return newClient;
+}
+
+// Helper function to initialize the FAPI client2 for encrypted ID token tests
+async function initializeClient2(): Promise<FAPIClient> {
+    const config: FAPIClientConfig = {
+        clientId: '06f42d27-c86b-481a-a134-18cf5e0d1e9c', // Client2 ID from conformance config
+        clientSecret: '', // Empty for private_key_jwt
+        tokenEndpoint: `${URLSTREAM_MTLS}/test-mtls/a/ksa-rp-seentarbie/token`, // mTLS endpoint
+        parEndpoint: `${URLSTREAM_MTLS}/test-mtls/a/ksa-rp-seentarbie/par`, // mTLS endpoint
+        issuer: `${URLSTREAM}/test/a/ksa-rp-seentarbie/`, // Note the trailing slash
+        discoveryUrl: `${URLSTREAM}/test/a/ksa-rp-seentarbie/.well-known/openid-configuration`,
+        redirectUri: `${URLSTREAM}/test/a/ksa-rp-seentarbie/callback`,
+        certPath: path.join(__dirname, 'certs/certs.pem'), // Your mTLS certificate
+        keyPath: path.join(__dirname, 'certs/privatekey.key'), // Your mTLS key
+        signingKeyPath: path.join(__dirname, 'certs/client2_signing_key.pem'), // Client2 JWT signing key
+        encryptionKeyPath: path.join(__dirname, 'certs/client2_encryption_key.pem'), // Client2 encryption key for decrypting ID tokens
+        keyId: 'sig2' // Key ID for client2 JWKS
+    };
+
+    const newClient = new FAPIClient(config);
+    
+    // Log the JWKS that should be provided to the conformance test suite
+    console.log('\n==== JWKS FOR CLIENT2 (ENCRYPTED ID TOKEN TEST) ====');
+    console.log('Getting JWKS');
+    const jwk = newClient.getJwks();
+    if (jwk) {
+        const jwksOutput = { keys: [jwk] };
+        console.log('Client2 JWKS:', JSON.stringify(jwksOutput, null, 2));
+    }
+    console.log('========================================\n');
+    
+    // Fetch the server's JWKS for validating ID tokens
+    console.log('Fetching authorization server JWKS for client2...');
+    await newClient.fetchServerJwks();
+    console.log('Authorization server JWKS fetched successfully\n');
+    
+    return newClient;
+}
+
+async function main() {
     try {
-        client = new FAPIClient(config);
-        
-        // Log the JWKS that should be provided to the conformance test suite
-        console.log('\n==== JWKS FOR CONFORMANCE TEST SUITE ====');
-        getJwksAsJson();
-        console.log('========================================\n');
+        client = await initializeClient();
         
         // Set requested scopes
         client.setRequestedScopes(['openid','accounts']);
 
         // Create HTTPS agent with mTLS certificates
-        if (!config.certPath || !config.keyPath) {
-            throw new Error('Certificate and key paths are required');
-        }
+        const certPath = path.join(__dirname, 'certs/certs.pem');
+        const keyPath = path.join(__dirname, 'certs/privatekey.key');
 
         const httpsAgent = new https.Agent({
-            cert: fs.readFileSync(config.certPath),
-            key: fs.readFileSync(config.keyPath),
+            cert: fs.readFileSync(certPath),
+            key: fs.readFileSync(keyPath),
             rejectUnauthorized: false // For test environment only
         });
         
@@ -264,7 +322,7 @@ const testClientAssertion = async (fapiClient: FAPIClient) => {
         const payload = {
             iss: 'seen-tarbee-corporate', // Use hardcoded value instead of accessing private config
             sub: 'seen-tarbee-corporate', // Use hardcoded value instead of accessing private config
-            aud: 'https://localhost.emobix.co.uk:8443/test/a/seentarbi-ais-corporate',
+            aud: `${URLSTREAM}/test/a/seentarbi-ais-corporate`,
             jti: crypto.randomBytes(16).toString('hex'),
             exp: now + 300,
             iat: now
@@ -576,9 +634,137 @@ async function testInvalidCHash() {
     return false;
 }
 
-// Add a function to test handling token responses with missing scope and expires_in
-async function testNoScopeExpiresInTokenResponse() {
-    console.log('\n==== TESTING MISSING SCOPE AND EXPIRES_IN IN TOKEN RESPONSE ====');
+// Test function for no-scope test - completes the full flow
+async function testNoScope(discoveryUrl: string, resourceEndpoint: string) {
+    console.log('Starting no-scope test...');
+    console.log('Discovery URL:', discoveryUrl);
+    console.log('Resource endpoint:', resourceEndpoint);
+    
+    try {
+        if (!client) {
+            throw new Error('Client is not initialized');
+        }
+
+        // Create HTTPS agent with mTLS configuration for resource endpoint calls
+        const certPath = path.join(__dirname, 'certs/certs.pem');
+        const keyPath = path.join(__dirname, 'certs/privatekey.key');
+        const httpsAgent = new https.Agent({
+            cert: fs.readFileSync(certPath),
+            key: fs.readFileSync(keyPath),
+            rejectUnauthorized: false // Accept self-signed certificates in test environment
+        });
+
+        // Step 1: OpenID Connect discovery
+        console.log('Step 1: Performing OpenID Connect discovery...');
+        const openIdConfig = await axios.get(discoveryUrl, { httpsAgent });
+        console.log('OpenID Connect discovery response status:', openIdConfig.status);
+        console.log('Authorization endpoint:', openIdConfig.data.authorization_endpoint);
+        console.log('Token endpoint:', openIdConfig.data.token_endpoint);
+        console.log('Issuer:', openIdConfig.data.issuer);
+
+        // Create account consent request
+        console.log('Creating account consent request...');
+        client.setRequestedScopes(['openid', 'accounts']);
+        const accountConsentRequest = await client.createAccountConsentRequest();
+        console.log('Account consent response:', accountConsentRequest);
+
+        // Create request object for authorization
+        console.log('Creating request object...');
+        client.setConsentId(accountConsentRequest.Data.ConsentId);
+        client.setRequestedScopes(['openid', `accounts:${accountConsentRequest.Data.ConsentId}`]);
+        const requestObject = await client.createRequestObject();
+
+        if (!requestObject) {
+            throw new Error('Could not create request object');
+        }
+
+        // Step 2: Submit PAR and get authorization
+        console.log('Submitting PAR request...');
+        const parResponse = await client.submitPushedAuthorizationRequest(requestObject);
+        console.log('PAR Response:', parResponse);
+
+        const authUrl = client.getAuthorizationUrl(parResponse.request_uri);
+        console.log('Authorization URL:', authUrl);
+
+        // Get authorization response
+        console.log('Making authorization request to:', authUrl);
+        let redirectUrl;
+        try {
+            const authResponse = await client.makeAuthorizationRequest(authUrl, parResponse.request_uri);
+            if (authResponse.redirectUrl) {
+                redirectUrl = authResponse.redirectUrl;
+            }
+        } catch (error: any) {
+            if (error.response?.status === 303 && error.response?.headers?.location) {
+                redirectUrl = error.response.headers.location;
+                console.log('Extracted redirect URL from 303 redirect:', redirectUrl);
+            } else {
+                console.error('Failed to get valid redirect response:', error);
+                throw error;
+            }
+        }
+
+        if (!redirectUrl) {
+            throw new Error('Could not obtain redirect URL with authorization code');
+        }
+
+        // Step 3: Exchange authorization code for tokens
+        console.log('Step 3: Exchanging authorization code for tokens...');
+        const tokenResponse = await client.handleRedirectUrlAndExchangeCode(redirectUrl);
+        console.log('Token exchange completed successfully');
+        
+        // Verify that the token response doesn't contain scope or expires_in
+        console.log('Verifying token response structure...');
+        if (tokenResponse.scope) {
+            console.log('⚠️ Token response contains scope field:', tokenResponse.scope);
+        } else {
+            console.log('✓ Token response does not contain scope field (as expected)');
+        }
+        
+        if (tokenResponse.expires_in) {
+            console.log('⚠️ Token response contains expires_in field:', tokenResponse.expires_in);
+        } else {
+            console.log('✓ Token response does not contain expires_in field (as expected)');
+        }
+        
+        // Verify that effective scopes are derived from requested scopes
+        const effectiveScopes = client.getEffectiveScopes(tokenResponse);
+        const requestedScopes = client.getRequestedScopes();
+        console.log('Effective scopes:', effectiveScopes);
+        console.log('Requested scopes:', requestedScopes);
+
+        // Step 4: Call resource endpoint with access token
+        console.log('Step 4: Calling resource endpoint with access token...');
+        const resourceResponse = await axios.get(resourceEndpoint, {
+            headers: {
+                'Authorization': `Bearer ${tokenResponse.access_token}`
+            },
+            httpsAgent
+        });
+        console.log('Resource endpoint response status:', resourceResponse.status);
+
+        if (resourceResponse.status === 200) {
+            console.log('\n✓ Test PASSED: Flow completed successfully without scope/expires_in in token response');
+            console.log('✓ Client correctly derived effective scopes from requested scopes');
+            return {
+                status: 'success',
+                message: 'No-scope test completed successfully',
+                effectiveScopes: effectiveScopes,
+                resourceResponseStatus: resourceResponse.status
+            };
+        } else {
+            throw new Error(`Unexpected resource endpoint response: ${resourceResponse.status}`);
+        }
+    } catch (error) {
+        console.error('No-scope test failed:', error instanceof Error ? error.message : String(error));
+        console.error('Error details:', error);
+        throw error;
+    }
+}
+
+// Add a function to test handling token responses with missing scope and expires_in (mock version for unit testing)
+async function testNoScopeExpiresInTokenResponseMock() {
+    console.log('\n==== TESTING MISSING SCOPE AND EXPIRES_IN IN TOKEN RESPONSE (MOCK) ====');
     
     try {
         // Make sure we have some requested scopes set
@@ -693,9 +879,18 @@ async function testRefreshTokenFlow(discoveryUrl: string, resourceEndpoint: stri
             throw new Error('Client is not initialized');
         }
 
+        // Create HTTPS agent with mTLS configuration for resource endpoint calls
+        const certPath = path.join(__dirname, 'certs/certs.pem');
+        const keyPath = path.join(__dirname, 'certs/privatekey.key');
+        const httpsAgent = new https.Agent({
+            cert: fs.readFileSync(certPath),
+            key: fs.readFileSync(keyPath),
+            rejectUnauthorized: false // Accept self-signed certificates in test environment
+        });
+
         // Step 1: OpenID Connect discovery and authorization code flow
         console.log('Step 1: Performing OpenID Connect discovery...');
-        const openIdConfig = await axios.get(discoveryUrl);
+        const openIdConfig = await axios.get(discoveryUrl, { httpsAgent });
         console.log('OpenID Connect discovery response status:', openIdConfig.status);
         console.log('Authorization endpoint:', openIdConfig.data.authorization_endpoint);
         console.log('Token endpoint:', openIdConfig.data.token_endpoint);
@@ -773,7 +968,8 @@ async function testRefreshTokenFlow(discoveryUrl: string, resourceEndpoint: stri
             resourceResponse = await axios.get(resourceEndpoint, {
                 headers: {
                     'Authorization': `Bearer ${tokenResponse.access_token}`
-                }
+                },
+                httpsAgent
             });
             console.log('Resource endpoint response status:', resourceResponse.status);
         } catch (error: any) {
@@ -808,7 +1004,8 @@ async function testRefreshTokenFlow(discoveryUrl: string, resourceEndpoint: stri
             const retryResponse = await axios.get(resourceEndpoint, {
                 headers: {
                     'Authorization': `Bearer ${secondRefreshResponse.access_token}`
-                }
+                },
+                httpsAgent
             });
             console.log('Retry resource endpoint response status:', retryResponse.status);
 
@@ -825,6 +1022,123 @@ async function testRefreshTokenFlow(discoveryUrl: string, resourceEndpoint: stri
         }
     } catch (error) {
         console.error('Refresh token test failed:', error instanceof Error ? error.message : String(error));
+        console.error('Error details:', error);
+        throw error;
+    }
+}
+
+// Test function for missing at_hash test - simplified version that expects success
+async function testMissingAtHash(discoveryUrl: string, resourceEndpoint: string) {
+    console.log('Starting missing at_hash test...');
+    console.log('Discovery URL:', discoveryUrl);
+    console.log('Resource endpoint:', resourceEndpoint);
+    
+    try {
+        if (!client) {
+            throw new Error('Client is not initialized');
+        }
+
+        // Create HTTPS agent with mTLS configuration for resource endpoint calls
+        const certPath = path.join(__dirname, 'certs/certs.pem');
+        const keyPath = path.join(__dirname, 'certs/privatekey.key');
+        const httpsAgent = new https.Agent({
+            cert: fs.readFileSync(certPath),
+            key: fs.readFileSync(keyPath),
+            rejectUnauthorized: false // Accept self-signed certificates in test environment
+        });
+
+        // Step 1: OpenID Connect discovery
+        console.log('Step 1: Performing OpenID Connect discovery...');
+        const openIdConfig = await axios.get(discoveryUrl, { httpsAgent });
+        console.log('OpenID Connect discovery response status:', openIdConfig.status);
+        console.log('Authorization endpoint:', openIdConfig.data.authorization_endpoint);
+        console.log('Token endpoint:', openIdConfig.data.token_endpoint);
+        console.log('Issuer:', openIdConfig.data.issuer);
+
+        // Create account consent request
+        console.log('Creating account consent request...');
+        client.setRequestedScopes(['openid', 'accounts']);
+        const accountConsentRequest = await client.createAccountConsentRequest();
+        console.log('Account consent response:', accountConsentRequest);
+
+        // Create request object for authorization
+        console.log('Creating request object...');
+        client.setConsentId(accountConsentRequest.Data.ConsentId);
+        client.setRequestedScopes(['openid', `accounts:${accountConsentRequest.Data.ConsentId}`]);
+        const requestObject = await client.createRequestObject();
+
+        if (!requestObject) {
+            throw new Error('Could not create request object');
+        }
+
+        // Step 2: Submit PAR and get authorization
+        console.log('Submitting PAR request...');
+        const parResponse = await client.submitPushedAuthorizationRequest(requestObject);
+        console.log('PAR Response:', parResponse);
+
+        const authUrl = client.getAuthorizationUrl(parResponse.request_uri);
+        console.log('Authorization URL:', authUrl);
+
+        // Get authorization response
+        console.log('Making authorization request to:', authUrl);
+        let redirectUrl;
+        try {
+            const authResponse = await client.makeAuthorizationRequest(authUrl, parResponse.request_uri);
+            console.log('Authorization response:', authResponse);
+            if (authResponse.redirectUrl) {
+                redirectUrl = authResponse.redirectUrl;
+                console.log('Got redirect URL from response:', redirectUrl);
+            }
+        } catch (error: any) {
+            console.log('Caught error from authorization request:', {
+                status: error.response?.status,
+                location: error.response?.headers?.location,
+                message: error.message
+            });
+            if (error.response?.status === 303 && error.response?.headers?.location) {
+                redirectUrl = error.response.headers.location;
+                console.log('Extracted redirect URL from 303 redirect:', redirectUrl);
+            } else if (error.response?.status === 302 && error.response?.headers?.location) {
+                redirectUrl = error.response.headers.location;
+                console.log('Extracted redirect URL from 302 redirect:', redirectUrl);
+            } else {
+                console.error('Failed to get valid redirect response:', error);
+                throw error;
+            }
+        }
+
+        if (!redirectUrl) {
+            throw new Error('Could not obtain redirect URL with authorization code');
+        }
+
+        // Step 3: Exchange authorization code for tokens
+        console.log('Step 3: Exchanging authorization code for tokens...');
+        const tokenResponse = await client.handleRedirectUrlAndExchangeCode(redirectUrl);
+        console.log('Token exchange completed successfully');
+        console.log('Token response keys:', Object.keys(tokenResponse));
+
+        // Step 4: Call resource endpoint with access token
+        console.log('Step 4: Calling resource endpoint with access token...');
+        const resourceResponse = await axios.get(resourceEndpoint, {
+            headers: {
+                'Authorization': `Bearer ${tokenResponse.access_token}`
+            },
+            httpsAgent
+        });
+        console.log('Resource endpoint response status:', resourceResponse.status);
+
+        if (resourceResponse.status === 200) {
+            console.log('\n✓ Test PASSED: Flow completed successfully with ID token missing at_hash');
+            return {
+                status: 'success',
+                message: 'Missing at_hash test completed successfully',
+                resourceResponseStatus: resourceResponse.status
+            };
+        } else {
+            throw new Error(`Unexpected resource endpoint response: ${resourceResponse.status}`);
+        }
+    } catch (error) {
+        console.error('Missing at_hash test failed:', error instanceof Error ? error.message : String(error));
         console.error('Error details:', error);
         throw error;
     }
@@ -905,9 +1219,9 @@ async function testOldIat() {
     return false;
 }
 
-// Add a function to test the missing at_hash scenario
-async function testMissingAtHash() {
-    console.log('\n==== TESTING MISSING AT_HASH HANDLING ====');
+// Add a function to test the missing at_hash scenario with mock tokens
+async function testMissingAtHashMock() {
+    console.log('\n==== TESTING MISSING AT_HASH HANDLING (MOCK) ====');
     
     try {
         // Create a mock ID token without an at_hash claim
@@ -974,9 +1288,127 @@ async function testMissingAtHash() {
     return false;
 }
 
-// Add a function to test audience as array
-async function testAudAsArray() {
-    console.log('\n==== TESTING AUDIENCE AS ARRAY VALIDATION ====');
+// Test function for aud-as-array test - completes the full flow
+async function testAudAsArray(discoveryUrl: string, resourceEndpoint: string) {
+    console.log('Starting aud-as-array test...');
+    console.log('Discovery URL:', discoveryUrl);
+    console.log('Resource endpoint:', resourceEndpoint);
+    
+    try {
+        if (!client) {
+            throw new Error('Client is not initialized');
+        }
+
+        // Create HTTPS agent with mTLS configuration for resource endpoint calls
+        const certPath = path.join(__dirname, 'certs/certs.pem');
+        const keyPath = path.join(__dirname, 'certs/privatekey.key');
+        const httpsAgent = new https.Agent({
+            cert: fs.readFileSync(certPath),
+            key: fs.readFileSync(keyPath),
+            rejectUnauthorized: false // Accept self-signed certificates in test environment
+        });
+
+        // Step 1: OpenID Connect discovery
+        console.log('Step 1: Performing OpenID Connect discovery...');
+        const openIdConfig = await axios.get(discoveryUrl, { httpsAgent });
+        console.log('OpenID Connect discovery response status:', openIdConfig.status);
+        console.log('Authorization endpoint:', openIdConfig.data.authorization_endpoint);
+        console.log('Token endpoint:', openIdConfig.data.token_endpoint);
+        console.log('Issuer:', openIdConfig.data.issuer);
+
+        // Create account consent request
+        console.log('Creating account consent request...');
+        client.setRequestedScopes(['openid', 'accounts']);
+        const accountConsentRequest = await client.createAccountConsentRequest();
+        console.log('Account consent response:', accountConsentRequest);
+
+        // Create request object for authorization
+        console.log('Creating request object...');
+        client.setConsentId(accountConsentRequest.Data.ConsentId);
+        client.setRequestedScopes(['openid', `accounts:${accountConsentRequest.Data.ConsentId}`]);
+        const requestObject = await client.createRequestObject();
+
+        if (!requestObject) {
+            throw new Error('Could not create request object');
+        }
+
+        // Step 2: Submit PAR and get authorization
+        console.log('Submitting PAR request...');
+        const parResponse = await client.submitPushedAuthorizationRequest(requestObject);
+        console.log('PAR Response:', parResponse);
+
+        const authUrl = client.getAuthorizationUrl(parResponse.request_uri);
+        console.log('Authorization URL:', authUrl);
+
+        // Get authorization response
+        console.log('Making authorization request to:', authUrl);
+        let redirectUrl;
+        try {
+            const authResponse = await client.makeAuthorizationRequest(authUrl, parResponse.request_uri);
+            if (authResponse.redirectUrl) {
+                redirectUrl = authResponse.redirectUrl;
+            }
+        } catch (error: any) {
+            if (error.response?.status === 303 && error.response?.headers?.location) {
+                redirectUrl = error.response.headers.location;
+                console.log('Extracted redirect URL from 303 redirect:', redirectUrl);
+            } else {
+                console.error('Failed to get valid redirect response:', error);
+                throw error;
+            }
+        }
+
+        if (!redirectUrl) {
+            throw new Error('Could not obtain redirect URL with authorization code');
+        }
+
+        // Step 3: Exchange authorization code for tokens
+        console.log('Step 3: Exchanging authorization code for tokens...');
+        const tokenResponse = await client.handleRedirectUrlAndExchangeCode(redirectUrl);
+        console.log('Token exchange completed successfully');
+        
+        // Parse the ID token to verify aud is an array
+        console.log('Verifying ID token aud claim is an array...');
+        const idTokenParts = tokenResponse.id_token.split('.');
+        const payload = JSON.parse(Buffer.from(idTokenParts[1], 'base64url').toString());
+        
+        if (Array.isArray(payload.aud)) {
+            console.log('✓ ID token aud claim is an array:', payload.aud);
+        } else {
+            throw new Error(`Expected aud to be an array, but got: ${typeof payload.aud}`);
+        }
+
+        // Step 4: Call resource endpoint with access token
+        console.log('Step 4: Calling resource endpoint with access token...');
+        const resourceResponse = await axios.get(resourceEndpoint, {
+            headers: {
+                'Authorization': `Bearer ${tokenResponse.access_token}`
+            },
+            httpsAgent
+        });
+        console.log('Resource endpoint response status:', resourceResponse.status);
+
+        if (resourceResponse.status === 200) {
+            console.log('\n✓ Test PASSED: Flow completed successfully with ID token aud as array');
+            return {
+                status: 'success',
+                message: 'Aud-as-array test completed successfully',
+                audValue: payload.aud,
+                resourceResponseStatus: resourceResponse.status
+            };
+        } else {
+            throw new Error(`Unexpected resource endpoint response: ${resourceResponse.status}`);
+        }
+    } catch (error) {
+        console.error('Aud-as-array test failed:', error instanceof Error ? error.message : String(error));
+        console.error('Error details:', error);
+        throw error;
+    }
+}
+
+// Mock-based test for audience as array (kept for reference/unit testing)
+async function testAudAsArrayMock() {
+    console.log('\n==== TESTING AUDIENCE AS ARRAY VALIDATION (MOCK) ====');
     
     try {
         // Create a mock ID token with audience as an array containing the client ID
@@ -1044,26 +1476,247 @@ async function testAudAsArray() {
 }
 
 // Add a function to test handling encrypted ID tokens
-async function testEncryptedIdToken() {
+async function testEncryptedIdToken(discoveryUrl: string, resourceEndpoint: string) {
     console.log('\n==== TESTING ENCRYPTED ID TOKEN HANDLING ====');
+    console.log('Discovery URL:', discoveryUrl);
+    console.log('Resource endpoint:', resourceEndpoint);
     
     try {
-        // For this test, we need to use the client2 configuration
-        // But this is already handled by the server, so we just need to make sure our client
-        // can properly decrypt and validate the encrypted ID tokens
+        // Initialize client2 if not already done
+        if (!client2) {
+            console.log('Initializing client2 for encrypted ID token test...');
+            client2 = await initializeClient2();
+        }
         
-        console.log('This test verifies that the client can handle encrypted ID tokens.');
-        console.log('The ID token will be encrypted using RSA-OAEP for key encryption and A256GCM for content encryption.');
+        // Create HTTPS agent with mTLS configuration
+        const certPath = path.join(__dirname, 'certs/certs.pem');
+        const keyPath = path.join(__dirname, 'certs/privatekey.key');
+        const httpsAgent = new https.Agent({
+            cert: fs.readFileSync(certPath),
+            key: fs.readFileSync(keyPath),
+            rejectUnauthorized: false // Accept self-signed certificates in test environment
+        });
+
+        // Step 1: OpenID Connect discovery
+        console.log('Step 1: Performing OpenID Connect discovery...');
+        const openIdConfig = await axios.get(discoveryUrl, { httpsAgent });
+        console.log('OpenID Connect discovery response status:', openIdConfig.status);
+        console.log('Authorization endpoint:', openIdConfig.data.authorization_endpoint);
+        console.log('Token endpoint:', openIdConfig.data.token_endpoint);
+        console.log('Issuer:', openIdConfig.data.issuer);
+
+        // Create account consent request using client2
+        console.log('Creating account consent request with client2...');
+        client2.setRequestedScopes(['openid', 'accounts']);
+        const accountConsentRequest = await client2.createAccountConsentRequest();
+        console.log('Account consent response:', accountConsentRequest);
+
+        // Create request object for authorization
+        console.log('Creating request object...');
+        client2.setConsentId(accountConsentRequest.Data.ConsentId);
+        client2.setRequestedScopes(['openid', `accounts:${accountConsentRequest.Data.ConsentId}`]);
+        const requestObject = await client2.createRequestObject();
+
+        if (!requestObject) {
+            throw new Error('Could not create request object');
+        }
+
+        // Step 2: Submit PAR and get authorization
+        console.log('Submitting PAR request...');
+        const parResponse = await client2.submitPushedAuthorizationRequest(requestObject);
+        console.log('PAR Response:', parResponse);
+
+        const authUrl = client2.getAuthorizationUrl(parResponse.request_uri);
+        console.log('Authorization URL:', authUrl);
+
+        // Get authorization response
+        console.log('Making authorization request to:', authUrl);
+        let redirectUrl;
+        try {
+            const authResponse = await client2.makeAuthorizationRequest(authUrl, parResponse.request_uri);
+            if (authResponse.redirectUrl) {
+                redirectUrl = authResponse.redirectUrl;
+            }
+        } catch (error: any) {
+            if (error.response?.status === 303 && error.response?.headers?.location) {
+                redirectUrl = error.response.headers.location;
+                console.log('Extracted redirect URL from 303 redirect:', redirectUrl);
+            } else if (error.response?.status === 302 && error.response?.headers?.location) {
+                redirectUrl = error.response.headers.location;
+                console.log('Extracted redirect URL from 302 redirect:', redirectUrl);
+            } else {
+                console.error('Failed to get valid redirect response:', error);
+                throw error;
+            }
+        }
+
+        if (!redirectUrl) {
+            throw new Error('Could not obtain redirect URL with authorization code');
+        }
+
+        // Step 3: Exchange authorization code for tokens (this should return an encrypted ID token)
+        console.log('Step 3: Exchanging authorization code for tokens...');
+        console.log('The ID token should be encrypted using RSA-OAEP with A256GCM');
+        const tokenResponse = await client2.handleRedirectUrlAndExchangeCode(redirectUrl);
+        console.log('Token exchange completed successfully');
         
-        // The test will be run through the main flow, which should automatically detect
-        // and decrypt the encrypted ID token
-        
-        return true;
+        // Verify the ID token was received
+        if (tokenResponse.id_token) {
+            console.log('✓ ID token received');
+            
+            // Check if it was encrypted (JWE has 5 parts separated by dots)
+            const parts = tokenResponse.id_token.split('.');
+            if (parts.length === 5) {
+                console.log('✓ ID token was in JWE format (encrypted) and was successfully decrypted');
+            } else if (parts.length === 3) {
+                console.log('ℹ ID token was in JWS format (signed but not encrypted)');
+            }
+        }
+
+        // Step 4: Call resource endpoint with access token
+        console.log('Step 4: Calling resource endpoint with access token...');
+        const resourceResponse = await axios.get(resourceEndpoint, {
+            headers: {
+                'Authorization': `Bearer ${tokenResponse.access_token}`
+            },
+            httpsAgent
+        });
+        console.log('Resource endpoint response status:', resourceResponse.status);
+
+        if (resourceResponse.status === 200) {
+            console.log('\n✓ Test PASSED: Flow completed successfully with encrypted ID token');
+            return {
+                status: 'success',
+                message: 'Encrypted ID token test completed successfully',
+                resourceResponseStatus: resourceResponse.status
+            };
+        } else {
+            throw new Error(`Unexpected resource endpoint response: ${resourceResponse.status}`);
+        }
     } catch (error) {
-        console.error('Error testing encrypted ID token handling:', error);
+        console.error('Encrypted ID token test failed:', error instanceof Error ? error.message : String(error));
+        console.error('Error details:', error);
+        throw error;
     }
+}
+
+// Add a function to test rejection of RSA1_5 encrypted ID tokens
+async function testEncryptedIdTokenRsa15Rejection(discoveryUrl: string, resourceEndpoint: string) {
+    console.log('\n==== TESTING RSA1_5 ENCRYPTED ID TOKEN REJECTION ====');
+    console.log('Discovery URL:', discoveryUrl);
+    console.log('Resource endpoint:', resourceEndpoint);
+    console.log('This test verifies that the client REJECTS ID tokens encrypted with RSA1_5 algorithm');
     
-    return false;
+    try {
+        // Initialize client2 if not already done
+        if (!client2) {
+            console.log('Initializing client2 for RSA1_5 rejection test...');
+            client2 = await initializeClient2();
+        }
+        
+        // Create HTTPS agent with mTLS configuration
+        const certPath = path.join(__dirname, 'certs/certs.pem');
+        const keyPath = path.join(__dirname, 'certs/privatekey.key');
+        const httpsAgent = new https.Agent({
+            cert: fs.readFileSync(certPath),
+            key: fs.readFileSync(keyPath),
+            rejectUnauthorized: false
+        });
+
+        // Step 1: OpenID Connect discovery
+        console.log('Step 1: Performing OpenID Connect discovery...');
+        const openIdConfig = await axios.get(discoveryUrl, { httpsAgent });
+        console.log('OpenID Connect discovery response status:', openIdConfig.status);
+
+        // Create account consent request using client2
+        console.log('Creating account consent request with client2...');
+        client2.setRequestedScopes(['openid', 'accounts']);
+        const accountConsentRequest = await client2.createAccountConsentRequest();
+        console.log('Account consent response:', accountConsentRequest);
+
+        // Create request object for authorization
+        console.log('Creating request object...');
+        client2.setConsentId(accountConsentRequest.Data.ConsentId);
+        client2.setRequestedScopes(['openid', `accounts:${accountConsentRequest.Data.ConsentId}`]);
+        const requestObject = await client2.createRequestObject();
+
+        if (!requestObject) {
+            throw new Error('Could not create request object');
+        }
+
+        // Step 2: Submit PAR and get authorization
+        console.log('Submitting PAR request...');
+        const parResponse = await client2.submitPushedAuthorizationRequest(requestObject);
+        console.log('PAR Response:', parResponse);
+
+        const authUrl = client2.getAuthorizationUrl(parResponse.request_uri);
+        console.log('Authorization URL:', authUrl);
+
+        // Get authorization response
+        console.log('Making authorization request to:', authUrl);
+        let redirectUrl;
+        try {
+            const authResponse = await client2.makeAuthorizationRequest(authUrl, parResponse.request_uri);
+            if (authResponse.redirectUrl) {
+                redirectUrl = authResponse.redirectUrl;
+            }
+        } catch (error: any) {
+            if (error.response?.status === 303 && error.response?.headers?.location) {
+                redirectUrl = error.response.headers.location;
+                console.log('Extracted redirect URL from 303 redirect:', redirectUrl);
+            } else if (error.response?.status === 302 && error.response?.headers?.location) {
+                redirectUrl = error.response.headers.location;
+                console.log('Extracted redirect URL from 302 redirect:', redirectUrl);
+            } else {
+                console.error('Failed to get valid redirect response:', error);
+                throw error;
+            }
+        }
+
+        if (!redirectUrl) {
+            throw new Error('Could not obtain redirect URL with authorization code');
+        }
+
+        // Step 3: Exchange authorization code for tokens
+        // This SHOULD FAIL because the ID token is encrypted with RSA1_5
+        console.log('Step 3: Exchanging authorization code for tokens...');
+        console.log('The ID token will be encrypted using RSA1_5 which should be REJECTED');
+        
+        try {
+            const tokenResponse = await client2.handleRedirectUrlAndExchangeCode(redirectUrl);
+            
+            // If we get here, the test FAILED because we should have rejected the RSA1_5 encrypted token
+            console.error('\n❌ Test FAILED: Client accepted ID token encrypted with RSA1_5');
+            console.error('The client should have rejected the token due to insecure algorithm');
+            throw new Error('Client incorrectly accepted ID token encrypted with disallowed RSA1_5 algorithm');
+            
+        } catch (error: any) {
+            // Check if the error is due to RSA1_5 rejection (which is expected)
+            if (error.message && (error.message.includes('RSA1_5') || error.message.includes('disallowed algorithm'))) {
+                console.log('\n✓ Test PASSED: Client correctly rejected ID token encrypted with RSA1_5');
+                console.log('✓ Error message:', error.message);
+                return {
+                    status: 'success',
+                    message: 'Client correctly rejected RSA1_5 encrypted ID token',
+                    rejectionReason: error.message
+                };
+            } else {
+                // Re-throw if it's a different error
+                throw error;
+            }
+        }
+    } catch (error) {
+        // Check if this is actually a success case (RSA1_5 rejection)
+        if (error instanceof Error && (error.message.includes('RSA1_5') || error.message.includes('disallowed algorithm'))) {
+            console.log('\n✓ Test PASSED: Client correctly rejected ID token encrypted with RSA1_5');
+            return {
+                status: 'success',
+                message: 'Client correctly rejected RSA1_5 encrypted ID token'
+            };
+        }
+        console.error('RSA1_5 rejection test failed:', error instanceof Error ? error.message : String(error));
+        throw error;
+    }
 }
 
 // Process command line arguments to determine which test to run
@@ -1080,20 +1733,38 @@ function processArgs() {
         console.log('  missing-exp           - Test missing exp claim detection');
         console.log('  invalid-s-hash        - Test invalid s_hash detection');
         console.log('  invalid-c-hash        - Test invalid c_hash detection');
-        console.log('  no-scope              - Test token response with missing scope');
+        console.log('  no-scope              - Test token response with missing scope and expires_in - requires discoveryUrl and resourceEndpoint');
         console.log('  missing-fields        - Test token response with missing scope and expires_in');
+        console.log('  happy-path            - Test complete happy path flow (for fapi1-advanced-final-client-test)');
         console.log('  refresh-token-flow    - Test refresh token flow with URL and resource endpoint');
         console.log('  invalid-nonce         - Test invalid nonce detection');
         console.log('  old-iat               - Test ID token with iat more than a week in the past');
-        console.log('  missing-at-hash       - Test ID token without at_hash (should be accepted)');
-        console.log('  aud-as-array          - Test ID token with audience as array with 1 value');
-        console.log('  encrypted-idtoken     - Test handling of encrypted ID tokens');
+        console.log('  missing-at-hash       - Test ID token without at_hash (should be accepted) - requires discoveryUrl and resourceEndpoint');
+        console.log('  aud-as-array          - Test ID token with audience as array with 1 value - requires discoveryUrl and resourceEndpoint');
+        console.log('  encrypted-idtoken     - Test handling of encrypted ID tokens - requires discoveryUrl and resourceEndpoint');
+        console.log('  encrypted-rsa15       - Test rejection of RSA1_5 encrypted ID tokens - requires discoveryUrl and resourceEndpoint');
         process.exit(0);
     }
 
     const testType = args[0];
     
     switch (testType.toLowerCase()) {
+        case 'happy-path':
+            const happyDiscoveryUrl = args[1];
+            const happyResourceEndpoint = args[2];
+            if (!happyDiscoveryUrl || !happyResourceEndpoint) {
+                console.error('Missing required parameters for happy-path test.');
+                console.error('Usage: node dist/index.js happy-path <discoveryUrl> <resourceEndpoint>');
+                process.exit(1);
+            }
+            initializeClient().then((initializedClient) => {
+                client = initializedClient;
+                return testRefreshTokenFlow(happyDiscoveryUrl, happyResourceEndpoint);
+            }).catch(err => {
+                console.error('Failed to execute happy path test:', err);
+                process.exit(1);
+            });
+            break;
         case 'refresh-token':
             const discoveryUrl = args[1];
             const resourceEndpoint = args[2];
@@ -1102,10 +1773,15 @@ function processArgs() {
                 console.error('Usage: node dist/index.js refresh-token <discoveryUrl> <resourceEndpoint>');
                 process.exit(1);
             }
-            main().then((initializedClient) => {
+            initializeClient().then((initializedClient) => {
                 client = initializedClient;
-                if (!client) throw new Error('Client not initialized');
+                console.log('\n==== TESTING REFRESH TOKEN FLOW ====');
+                console.log('This test verifies that the client correctly handles refresh token flow');
+                console.log('(Resource endpoint returns 401, client uses refresh_token grant twice, then retries)\n');
                 return testRefreshTokenFlow(discoveryUrl, resourceEndpoint);
+            }).then(() => {
+                console.log('\n✓ Test PASSED: Refresh token flow completed successfully');
+                process.exit(0);
             }).catch(err => {
                 console.error('Failed to execute refresh token test:', err);
                 process.exit(1);
@@ -1193,10 +1869,22 @@ function processArgs() {
             break;
         case 'no-scope':
         case 'no-scope-expires':
-            main().then((initializedClient) => {
+            const noScopeDiscoveryUrl = args[1];
+            const noScopeResourceEndpoint = args[2];
+            if (!noScopeDiscoveryUrl || !noScopeResourceEndpoint) {
+                console.error('Missing required parameters for no-scope test.');
+                console.error('Usage: node dist/index.js no-scope <discoveryUrl> <resourceEndpoint>');
+                process.exit(1);
+            }
+            initializeClient().then((initializedClient) => {
                 client = initializedClient;
-                if (!client) throw new Error('Client not initialized');
-                return testNoScopeExpiresInTokenResponse();
+                console.log('\n==== TESTING NO SCOPE IN TOKEN RESPONSE ====');
+                console.log('This test verifies that the client correctly handles token responses without scope/expires_in');
+                console.log('(Client should derive effective scopes from requested scopes)\n');
+                return testNoScope(noScopeDiscoveryUrl, noScopeResourceEndpoint);
+            }).then(() => {
+                console.log('\n✓ Test PASSED: Client correctly handled token response without scope/expires_in');
+                process.exit(0);
             }).catch(err => {
                 console.error('Failed to execute no-scope test:', err);
                 process.exit(1);
@@ -1234,32 +1922,90 @@ function processArgs() {
             });
             break;
         case 'missing-at-hash':
-            main().then((initializedClient) => {
+            const atHashDiscoveryUrl = args[1];
+            const atHashResourceEndpoint = args[2];
+            if (!atHashDiscoveryUrl || !atHashResourceEndpoint) {
+                console.error('Missing required parameters for missing-at-hash test.');
+                console.error('Usage: node dist/index.js missing-at-hash <discoveryUrl> <resourceEndpoint>');
+                process.exit(1);
+            }
+            initializeClient().then((initializedClient) => {
                 client = initializedClient;
-                if (!client) throw new Error('Client not initialized');
-                return testMissingAtHash();
+                console.log('\n==== TESTING MISSING AT_HASH ====');
+                console.log('This test verifies that the client accepts ID tokens without at_hash claim');
+                console.log('(at_hash is optional when access token is not returned from authorization endpoint)\n');
+                return testMissingAtHash(atHashDiscoveryUrl, atHashResourceEndpoint);
+            }).then(() => {
+                console.log('\n✓ Test PASSED: Client correctly handled ID token without at_hash');
+                process.exit(0);
             }).catch(err => {
                 console.error('Failed to execute missing at_hash test:', err);
                 process.exit(1);
             });
             break;
         case 'aud-as-array':
-            main().then((initializedClient) => {
+            const audDiscoveryUrl = args[1];
+            const audResourceEndpoint = args[2];
+            if (!audDiscoveryUrl || !audResourceEndpoint) {
+                console.error('Missing required parameters for aud-as-array test.');
+                console.error('Usage: node dist/index.js aud-as-array <discoveryUrl> <resourceEndpoint>');
+                process.exit(1);
+            }
+            initializeClient().then((initializedClient) => {
                 client = initializedClient;
-                if (!client) throw new Error('Client not initialized');
-                return testAudAsArray();
+                console.log('\n==== TESTING AUDIENCE AS ARRAY ====');
+                console.log('This test verifies that the client correctly handles ID tokens with aud as an array');
+                console.log('(aud can be an array with one value per OIDC spec)\n');
+                return testAudAsArray(audDiscoveryUrl, audResourceEndpoint);
+            }).then(() => {
+                console.log('\n✓ Test PASSED: Client correctly handled ID token with aud as array');
+                process.exit(0);
             }).catch(err => {
                 console.error('Failed to execute aud-as-array test:', err);
                 process.exit(1);
             });
             break;
         case 'encrypted-idtoken':
-            main().then((initializedClient) => {
-                client = initializedClient;
-                if (!client) throw new Error('Client not initialized');
-                return testEncryptedIdToken();
+            const encDiscoveryUrl = args[1];
+            const encResourceEndpoint = args[2];
+            if (!encDiscoveryUrl || !encResourceEndpoint) {
+                console.error('Missing required parameters for encrypted-idtoken test.');
+                console.error('Usage: node dist/index.js encrypted-idtoken <discoveryUrl> <resourceEndpoint>');
+                process.exit(1);
+            }
+            console.log('\n==== TESTING ENCRYPTED ID TOKEN ====');
+            console.log('This test verifies that the client can handle encrypted ID tokens.');
+            console.log('The ID token will be encrypted using RSA-OAEP for key encryption and A256GCM for content encryption.\n');
+            testEncryptedIdToken(encDiscoveryUrl, encResourceEndpoint).then(() => {
+                console.log('\n✓ Test PASSED: Client correctly handled encrypted ID token');
+                process.exit(0);
             }).catch(err => {
                 console.error('Failed to execute encrypted ID token test:', err);
+                process.exit(1);
+            });
+            break;
+        case 'encrypted-rsa15':
+        case 'encrypted-idtoken-rsa15':
+            const rsa15DiscoveryUrl = args[1];
+            const rsa15ResourceEndpoint = args[2];
+            if (!rsa15DiscoveryUrl || !rsa15ResourceEndpoint) {
+                console.error('Missing required parameters for encrypted-rsa15 test.');
+                console.error('Usage: node dist/index.js encrypted-rsa15 <discoveryUrl> <resourceEndpoint>');
+                process.exit(1);
+            }
+            console.log('\n==== TESTING RSA1_5 ENCRYPTED ID TOKEN REJECTION ====');
+            console.log('This test verifies that the client REJECTS ID tokens encrypted with RSA1_5.');
+            console.log('RSA1_5 (RSA-PKCS1-v1_5) is not allowed per FAPI security requirements.\n');
+            testEncryptedIdTokenRsa15Rejection(rsa15DiscoveryUrl, rsa15ResourceEndpoint).then(() => {
+                console.log('\n✓ Test PASSED: Client correctly rejected RSA1_5 encrypted ID token');
+                process.exit(0);
+            }).catch(err => {
+                // Check if this is actually a success case (RSA1_5 rejection)
+                if (err.message && (err.message.includes('RSA1_5') || err.message.includes('disallowed algorithm'))) {
+                    console.log('\n✓ Test PASSED: Client correctly rejected RSA1_5 encrypted ID token');
+                    process.exit(0);
+                }
+                console.error('Failed to execute encrypted-rsa15 test:', err);
                 process.exit(1);
             });
             break;
@@ -1277,6 +2023,7 @@ if (require.main === module) {
 // Export the functions and variables at the top level
 export {
     client,
+    client2,
     main,
     testInvalidIssuer,
     testInvalidAudience,
@@ -1288,11 +2035,14 @@ export {
     testInvalidCHash,
     testRefreshTokenFlow,
     testMissingScopeAndExpiresIn,
-    testNoScopeExpiresInTokenResponse,
+    testNoScope,
+    testNoScopeExpiresInTokenResponseMock,
     testInvalidNonce,
     testOldIat,
     testMissingAtHash,
     testAudAsArray,
+    testAudAsArrayMock,
     testEncryptedIdToken,
+    testEncryptedIdTokenRsa15Rejection,
     getJwksAsJson
 };
