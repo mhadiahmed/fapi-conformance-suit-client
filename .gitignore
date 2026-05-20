@@ -159,7 +159,7 @@ dist
 # *.crt
 # *.p12
 # *.pfx
-
+src/certs/frn-key.key
 # Build output (rebuild locally — copies certs from src/certs/)
 dist/
 
