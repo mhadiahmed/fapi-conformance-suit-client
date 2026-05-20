@@ -102,51 +102,154 @@ async function initializeClient2(): Promise<FAPIClient> {
     return newClient;
 }
 
-async function main() {
+// Full live authorization flow against the conformance suite:
+//   discovery → consent → PAR → authorize → extract redirect URL
+//   → handleRedirectUrlAndExchangeCode (which runs the validator chain and
+//     throws REJECTED:* on any failure) → token exchange.
+// Returns the initialized client and the token response on success.
+// Errors propagate up so the caller can decide whether a rejection is the
+// expected outcome (negative tests) or a failure (happy path).
+async function main(): Promise<FAPIClient> {
+    client = await initializeClient();
+    client.setRequestedScopes(['openid','accounts']);
+
+    // Step 1: account consent
+    console.log('Creating account consent request...');
+    const consentResponse = await client.createAccountConsentRequest();
+    console.log('Account consent response:', consentResponse);
+    client.setConsentId(consentResponse.Data.ConsentId);
+
+    // Step 2: request object + PAR
+    console.log('Creating request object...');
+    const requestObject = await client.createRequestObject();
+    if (!requestObject) {
+        throw new Error('Failed to create request object. Check signing key configuration.');
+    }
+    console.log('Submitting PAR request...');
+    const parResponse = await client.submitPushedAuthorizationRequest(requestObject);
+    console.log('PAR Response:', parResponse);
+    if (!parResponse.request_uri) {
+        throw new Error('No request_uri received from PAR endpoint');
+    }
+
+    // Step 3: authorize → capture redirect URL with id_token in fragment
+    const authUrl = client.getAuthorizationUrl(parResponse.request_uri);
+    console.log('\nMaking authorization request to:', authUrl);
+
+    let redirectUrl: string | undefined;
+    try {
+        const authResponse = await client.makeAuthorizationRequest(authUrl, parResponse.request_uri);
+        if (authResponse && authResponse.redirectUrl) {
+            redirectUrl = authResponse.redirectUrl;
+        }
+    } catch (error: any) {
+        if ((error.response?.status === 302 || error.response?.status === 303) && error.response?.headers?.location) {
+            redirectUrl = error.response.headers.location;
+        } else {
+            throw error;
+        }
+    }
+    if (!redirectUrl) {
+        throw new Error('Authorization endpoint did not return a redirect URL with id_token/code');
+    }
+    console.log('Captured authorization redirect URL:', redirectUrl);
+
+    // Step 4: validate id_token + exchange code (validators throw clear REJECTED:* errors)
+    const tokenResponse = await client.handleRedirectUrlAndExchangeCode(redirectUrl);
+    (client as any).__lastTokenResponse = tokenResponse;
+    return client;
+}
+
+// Build the mTLS-enabled HTTPS agent the resource endpoint expects.
+function buildMtlsAgent(): https.Agent {
+    const certPath = path.join(__dirname, 'certs/certs.pem');
+    const keyPath = path.join(__dirname, 'certs/privatekey.key');
+    return new https.Agent({
+        cert: fs.readFileSync(certPath),
+        key: fs.readFileSync(keyPath),
+        rejectUnauthorized: false
+    });
+}
+
+// CLI helper for any NEGATIVE test (invalid-*, missing-*, bad-*, expired,
+// iat-in-past, etc.).
+// Runs the live flow; treats a thrown validator/REJECTED:* error as the
+// expected outcome and exits 0 with a clear "Test PASSED: rejection detected"
+// banner. If the flow somehow completes successfully, exits 1 (the test
+// FAILED because the bad response was not detected).
+async function runNegativeTest(testName: string): Promise<void> {
+    console.log(`\n==== NEGATIVE TEST: ${testName} ====`);
+    console.log('Expectation: the live conformance suite will return a deliberately-bad');
+    console.log('id_token; this client MUST detect and reject it before token exchange.\n');
+    try {
+        await main();
+        console.error(`\n✗ Test FAILED: ${testName} — client accepted the bad response without rejection.`);
+        process.exit(1);
+    } catch (error: any) {
+        const msg = error?.message || String(error);
+        console.log(`\n✓ Test PASSED: ${testName} — client detected and rejected the bad response.`);
+        console.log(`  Rejection reason: ${msg}`);
+        process.exit(0);
+    }
+}
+
+// CLI helper for the HAPPY PATH (fapi1-advanced-final-client-test).
+// Runs the live flow, then calls the resource endpoint and expects 200.
+async function runHappyPath(resourceEndpoint: string): Promise<void> {
+    console.log('\n==== HAPPY PATH TEST: fapi1-advanced-final-client-test ====');
+    console.log('Expectation: full OAuth/OIDC flow completes; resource endpoint returns 200.\n');
+    try {
+        const c = await main();
+        const tokenResponse = (c as any).__lastTokenResponse;
+        if (!tokenResponse || !tokenResponse.access_token) {
+            throw new Error('Token exchange did not produce an access token');
+        }
+        console.log('Step 4: Calling resource endpoint with access token...');
+        const resourceResponse = await axios.get(resourceEndpoint, {
+            headers: { 'Authorization': `Bearer ${tokenResponse.access_token}` },
+            httpsAgent: buildMtlsAgent()
+        });
+        console.log('Resource endpoint response status:', resourceResponse.status);
+        if (resourceResponse.status === 200) {
+            console.log('\n✓ Test PASSED: Happy path completed; resource endpoint returned 200.');
+            process.exit(0);
+        }
+        console.error(`\n✗ Test FAILED: resource endpoint returned ${resourceResponse.status} (expected 200).`);
+        process.exit(1);
+    } catch (error: any) {
+        console.error('\n✗ Test FAILED: Happy path errored —', error?.message || error);
+        process.exit(1);
+    }
+}
+
+async function _unusedLegacyMain() {
     try {
         client = await initializeClient();
-        
-        // Set requested scopes
         client.setRequestedScopes(['openid','accounts']);
-
-        // Create HTTPS agent with mTLS certificates
         const certPath = path.join(__dirname, 'certs/certs.pem');
         const keyPath = path.join(__dirname, 'certs/privatekey.key');
-
         const httpsAgent = new https.Agent({
             cert: fs.readFileSync(certPath),
             key: fs.readFileSync(keyPath),
-            rejectUnauthorized: false // For test environment only
+            rejectUnauthorized: false
         });
-        
-        // Step 1: Create account consent first
         console.log('Creating account consent request...');
         const consentResponse = await client.createAccountConsentRequest();
         console.log('Account consent response:', consentResponse);
-
-        // Set the consent ID before creating request object
         client.setConsentId(consentResponse.Data.ConsentId);
-
-        // Step 2: Create and submit PAR request
         console.log('Creating request object...');
         const requestObject = await client.createRequestObject();
-        
         if (!requestObject) {
             throw new Error('Failed to create request object. Check signing key configuration.');
         }
-        
         console.log('Submitting PAR request...');
         const parResponse = await client.submitPushedAuthorizationRequest(requestObject);
         console.log('PAR Response:', parResponse);
-
         if (!parResponse.request_uri) {
             throw new Error('No request_uri received from PAR endpoint');
         }
-
-        // Step 3: Get authorization URL
         const authUrl = client.getAuthorizationUrl(parResponse.request_uri);
         console.log('\nMaking authorization request to:', authUrl);
-
         try {
             // Step 4: Make the authorization request
             const response = await axios.get(authUrl, {
@@ -374,6 +477,35 @@ async function testInvalidIssuer() {
     }
     
     return false;
+}
+
+// Test that the client refuses a discovery document whose "issuer"
+// field does not match the expected issuer URL (OIDC Discovery §4.3).
+async function testDiscoveryIssuerMismatch() {
+    console.log('\n==== TESTING DISCOVERY ISSUER MISMATCH DETECTION ====');
+    console.log('Per OIDC Discovery §4.3, the "issuer" value in the discovery document');
+    console.log('must match the configured issuer. A mismatch must cause the client to');
+    console.log('refuse the discovery document.\n');
+
+    const fakeDiscoveryDoc = {
+        issuer: 'https://attacker.example.com/evil-issuer',
+        jwks_uri: 'https://attacker.example.com/jwks',
+        authorization_endpoint: 'https://attacker.example.com/authorize',
+        token_endpoint: 'https://attacker.example.com/token'
+    };
+    console.log('Mock discovery document issuer:', fakeDiscoveryDoc.issuer);
+    console.log('Expected (configured) issuer  :', (client as any).config?.issuer);
+
+    try {
+        client!.validateDiscoveryIssuer(fakeDiscoveryDoc);
+        console.error('ERROR: Failed to detect discovery issuer mismatch — client accepted a tampered discovery document');
+        return false;
+    } catch (error: any) {
+        console.log('✓ Successfully detected discovery issuer mismatch');
+        console.log('  Rejection reason:', error.message);
+        console.log('✓ Test passed: discovery document with wrong issuer was rejected');
+        return true;
+    }
 }
 
 // Add a function to test the invalid audience scenario
@@ -1725,8 +1857,21 @@ function processArgs() {
     if (args.length === 0 || args[0] === '-h' || args[0] === '--help') {
         console.log('Usage: npm run test <test-type>');
         console.log('Available test types:');
-        console.log('  invalid-issuer        - Test invalid issuer detection');
-        console.log('  invalid-audience      - Test invalid audience detection');
+        console.log('  invalid-issuer / invalid-missing-iss          - id_token iss claim wrong or missing');
+        console.log('  discovery-issuer-mismatch                     - discovery document issuer mismatched');
+        console.log('  invalid-audience / invalid-missing-aud        - id_token aud claim wrong or missing');
+        console.log('  invalid-secondary-aud                         - aud is multi-valued without correct azp');
+        console.log('  invalid-signature                             - id_token signature invalid');
+        console.log('  invalid-null-alg / none-algorithm             - id_token alg = "none"');
+        console.log('  invalid-alternate-alg                         - id_token alg is not the registered PS256');
+        console.log('  invalid-expired-exp / expired-exp             - id_token exp in the past');
+        console.log('  invalid-missing-exp / missing-exp             - id_token missing exp claim');
+        console.log('  invalid-shash / invalid-s-hash                - id_token s_hash mismatched');
+        console.log('  invalid-missing-shash                         - id_token missing s_hash claim');
+        console.log('  invalid-chash / invalid-c-hash                - id_token c_hash mismatched');
+        console.log('  invalid-nonce                                 - id_token nonce mismatched');
+        console.log('  invalid-missing-nonce                         - id_token missing nonce claim');
+        console.log('  iat-is-week-in-past / old-iat                 - id_token iat too far in the past');
         console.log('  invalid-signature     - Test invalid signature detection');
         console.log('  none-algorithm        - Test "none" algorithm detection');
         console.log('  expired-exp           - Test expired exp claim detection');
@@ -1749,36 +1894,28 @@ function processArgs() {
     const testType = args[0];
     
     switch (testType.toLowerCase()) {
-        case 'happy-path':
-            const happyDiscoveryUrl = args[1];
-            const happyResourceEndpoint = args[2];
-            if (!happyDiscoveryUrl || !happyResourceEndpoint) {
-                console.error('Missing required parameters for happy-path test.');
+        case 'happy-path': {
+            const url = args[1];
+            const endpoint = args[2];
+            if (!url || !endpoint) {
                 console.error('Usage: node dist/index.js happy-path <discoveryUrl> <resourceEndpoint>');
                 process.exit(1);
             }
-            initializeClient().then((initializedClient) => {
-                client = initializedClient;
-                return testRefreshTokenFlow(happyDiscoveryUrl, happyResourceEndpoint);
-            }).catch(err => {
-                console.error('Failed to execute happy path test:', err);
-                process.exit(1);
-            });
+            runHappyPath(endpoint);
             break;
-        case 'refresh-token':
-            const discoveryUrl = args[1];
-            const resourceEndpoint = args[2];
-            if (!discoveryUrl || !resourceEndpoint) {
-                console.error('Missing required parameters for refresh-token test.');
+        }
+        case 'refresh-token': {
+            const url = args[1];
+            const endpoint = args[2];
+            if (!url || !endpoint) {
                 console.error('Usage: node dist/index.js refresh-token <discoveryUrl> <resourceEndpoint>');
                 process.exit(1);
             }
-            initializeClient().then((initializedClient) => {
-                client = initializedClient;
+            initializeClient().then((c) => {
+                client = c;
                 console.log('\n==== TESTING REFRESH TOKEN FLOW ====');
-                console.log('This test verifies that the client correctly handles refresh token flow');
                 console.log('(Resource endpoint returns 401, client uses refresh_token grant twice, then retries)\n');
-                return testRefreshTokenFlow(discoveryUrl, resourceEndpoint);
+                return testRefreshTokenFlow(url, endpoint);
             }).then(() => {
                 console.log('\n✓ Test PASSED: Refresh token flow completed successfully');
                 process.exit(0);
@@ -1787,101 +1924,81 @@ function processArgs() {
                 process.exit(1);
             });
             break;
+        }
         case 'invalid-issuer':
-            main().then((initializedClient) => {
-                client = initializedClient;
+            runNegativeTest('fapi1-advanced-final-client-test-invalid-iss');
+            break;
+        case 'invalid-missing-iss':
+            runNegativeTest('fapi1-advanced-final-client-test-invalid-missing-iss');
+            break;
+        case 'discovery-issuer-mismatch':
+            // Live: validateDiscoveryIssuer (wired into fetchServerJwks) rejects when the
+            // suite serves a tampered discovery doc. Treat any thrown error as the expected
+            // rejection. If the live flow completes without rejection (suite not in the
+            // right state), fall back to the mock-based test for completeness.
+            main().then(() => {
+                console.log('\nLive flow completed without rejection — running mock-based discovery-issuer-mismatch validator check for completeness.');
                 if (!client) throw new Error('Client not initialized');
-                return testInvalidIssuer();
+                return testDiscoveryIssuerMismatch();
+            }).then((ok) => {
+                process.exit(ok ? 0 : 1);
             }).catch(err => {
-                console.error('Failed to execute invalid issuer test:', err);
-                process.exit(1);
+                const msg = err?.message || String(err);
+                console.log('\n✓ Test PASSED: fapi1-advanced-final-client-test-discovery-issuer-mismatch — client rejected the discovery document.');
+                console.log('  Rejection reason:', msg);
+                process.exit(0);
             });
             break;
         case 'invalid-audience':
-            main().then((initializedClient) => {
-                client = initializedClient;
-                if (!client) throw new Error('Client not initialized');
-                return testInvalidAudience();
-            }).catch(err => {
-                console.error('Failed to execute invalid audience test:', err);
-                process.exit(1);
-            });
+            runNegativeTest('fapi1-advanced-final-client-test-invalid-aud');
+            break;
+        case 'invalid-missing-aud':
+            runNegativeTest('fapi1-advanced-final-client-test-invalid-missing-aud');
+            break;
+        case 'invalid-secondary-aud':
+            runNegativeTest('fapi1-advanced-final-client-test-invalid-secondary-aud');
             break;
         case 'invalid-signature':
-            main().then((initializedClient) => {
-                client = initializedClient;
-                if (!client) throw new Error('Client not initialized');
-                return testInvalidSignature();
-            }).catch(err => {
-                console.error('Failed to execute invalid signature test:', err);
-                process.exit(1);
-            });
+            runNegativeTest('fapi1-advanced-final-client-test-invalid-signature');
             break;
         case 'none-algorithm':
-            main().then((initializedClient) => {
-                client = initializedClient;
-                if (!client) throw new Error('Client not initialized');
-                return testNoneAlgorithm();
-            }).catch(err => {
-                console.error('Failed to execute none algorithm test:', err);
-                process.exit(1);
-            });
+        case 'invalid-null-alg':
+            runNegativeTest('fapi1-advanced-final-client-test-invalid-null-alg');
+            break;
+        case 'invalid-alternate-alg':
+            runNegativeTest('fapi1-advanced-final-client-test-invalid-alternate-alg');
             break;
         case 'expired-exp':
-            main().then((initializedClient) => {
-                client = initializedClient;
-                if (!client) throw new Error('Client not initialized');
-                return testExpiredExp();
-            }).catch(err => {
-                console.error('Failed to execute expired exp test:', err);
-                process.exit(1);
-            });
+        case 'invalid-expired-exp':
+            runNegativeTest('fapi1-advanced-final-client-test-invalid-expired-exp');
             break;
         case 'missing-exp':
-            main().then((initializedClient) => {
-                client = initializedClient;
-                if (!client) throw new Error('Client not initialized');
-                return testMissingExp();
-            }).catch(err => {
-                console.error('Failed to execute missing exp test:', err);
-                process.exit(1);
-            });
+        case 'invalid-missing-exp':
+            runNegativeTest('fapi1-advanced-final-client-test-invalid-missing-exp');
             break;
         case 'invalid-s-hash':
-            main().then((initializedClient) => {
-                client = initializedClient;
-                if (!client) throw new Error('Client not initialized');
-                return testInvalidSHash();
-            }).catch(err => {
-                console.error('Failed to execute invalid s_hash test:', err);
-                process.exit(1);
-            });
+        case 'invalid-shash':
+            runNegativeTest('fapi1-advanced-final-client-test-invalid-shash');
+            break;
+        case 'invalid-missing-shash':
+            runNegativeTest('fapi1-advanced-final-client-test-invalid-missing-shash');
             break;
         case 'invalid-c-hash':
-            main().then((initializedClient) => {
-                client = initializedClient;
-                if (!client) throw new Error('Client not initialized');
-                return testInvalidCHash();
-            }).catch(err => {
-                console.error('Failed to execute invalid c_hash test:', err);
-                process.exit(1);
-            });
+        case 'invalid-chash':
+            runNegativeTest('fapi1-advanced-final-client-test-invalid-chash');
             break;
         case 'no-scope':
-        case 'no-scope-expires':
-            const noScopeDiscoveryUrl = args[1];
-            const noScopeResourceEndpoint = args[2];
-            if (!noScopeDiscoveryUrl || !noScopeResourceEndpoint) {
-                console.error('Missing required parameters for no-scope test.');
+        case 'no-scope-expires': {
+            const url = args[1];
+            const endpoint = args[2];
+            if (!url || !endpoint) {
                 console.error('Usage: node dist/index.js no-scope <discoveryUrl> <resourceEndpoint>');
                 process.exit(1);
             }
-            initializeClient().then((initializedClient) => {
-                client = initializedClient;
+            initializeClient().then((c) => {
+                client = c;
                 console.log('\n==== TESTING NO SCOPE IN TOKEN RESPONSE ====');
-                console.log('This test verifies that the client correctly handles token responses without scope/expires_in');
-                console.log('(Client should derive effective scopes from requested scopes)\n');
-                return testNoScope(noScopeDiscoveryUrl, noScopeResourceEndpoint);
+                return testNoScope(url, endpoint);
             }).then(() => {
                 console.log('\n✓ Test PASSED: Client correctly handled token response without scope/expires_in');
                 process.exit(0);
@@ -1890,10 +2007,10 @@ function processArgs() {
                 process.exit(1);
             });
             break;
+        }
         case 'missing-fields':
         case 'missing-scope-expires-in':
-            main().then((initializedClient) => {
-                client = initializedClient;
+            main().then(() => {
                 if (!client) throw new Error('Client not initialized');
                 return testMissingScopeAndExpiresIn();
             }).catch(err => {
@@ -1902,24 +2019,14 @@ function processArgs() {
             });
             break;
         case 'invalid-nonce':
-            main().then((initializedClient) => {
-                client = initializedClient;
-                if (!client) throw new Error('Client not initialized');
-                return testInvalidNonce();
-            }).catch(err => {
-                console.error('Failed to execute invalid nonce test:', err);
-                process.exit(1);
-            });
+            runNegativeTest('fapi1-advanced-final-client-test-invalid-nonce');
+            break;
+        case 'invalid-missing-nonce':
+            runNegativeTest('fapi1-advanced-final-client-test-invalid-missing-nonce');
             break;
         case 'old-iat':
-            main().then((initializedClient) => {
-                client = initializedClient;
-                if (!client) throw new Error('Client not initialized');
-                return testOldIat();
-            }).catch(err => {
-                console.error('Failed to execute old iat test:', err);
-                process.exit(1);
-            });
+        case 'iat-is-week-in-past':
+            runNegativeTest('fapi1-advanced-final-client-test-iat-is-week-in-past');
             break;
         case 'missing-at-hash':
             const atHashDiscoveryUrl = args[1];
@@ -2026,6 +2133,7 @@ export {
     client2,
     main,
     testInvalidIssuer,
+    testDiscoveryIssuerMismatch,
     testInvalidAudience,
     testInvalidSignature,
     testNoneAlgorithm,

@@ -838,6 +838,39 @@ export class FAPIClient {
 		}
 	}
 
+	// OIDC Discovery §4.3 / RFC 8414 §3.3:
+	// the "issuer" value in the discovery document MUST match the expected issuer.
+	public validateDiscoveryIssuer(discoveryDoc: any): void {
+		if (!this.config.issuer) {
+			throw new Error('Issuer not configured, cannot validate discovery issuer');
+		}
+		if (!discoveryDoc || typeof discoveryDoc !== 'object') {
+			const error = new Error('Invalid discovery document: not an object');
+			console.error(error.message);
+			throw error;
+		}
+		if (!discoveryDoc.issuer) {
+			const error = new Error('Missing "issuer" field in discovery document');
+			console.error(error.message);
+			throw error;
+		}
+
+		const expected = this.config.issuer.replace(/\/+$/, '');
+		const received = String(discoveryDoc.issuer).replace(/\/+$/, '');
+
+		if (received !== expected) {
+			const error = new Error('Discovery document issuer mismatch — refusing to use this discovery document');
+			console.error(error.message, {
+				expected: this.config.issuer,
+				received: discoveryDoc.issuer,
+				normalized_expected: expected,
+				normalized_received: received
+			});
+			throw error;
+		}
+		console.log('✓ Discovery issuer matches expected:', expected);
+	}
+
 	public validateIdTokenAudience(idToken: any): void {
 		this.logConformanceTestInteraction('Validating ID token audience');
 
@@ -1015,6 +1048,8 @@ export class FAPIClient {
 			const discoveryResponse = await axios.get(this.config.discoveryUrl, {
 				httpsAgent: this.httpsAgent
 			});
+
+			this.validateDiscoveryIssuer(discoveryResponse.data);
 
 			const jwksUri = discoveryResponse.data.jwks_uri;
 			if (!jwksUri) {
@@ -2384,9 +2419,121 @@ export class FAPIClient {
 					console.log('Encryption algorithm check passed:', header.alg);
 				}
 				
+				// For plain signed JWTs (3 parts), run the full validator chain BEFORE token exchange.
+				// Any failure logs an explicit REJECTED line and aborts.
+				if (parts.length === 3) {
+					console.log('ID token is a plain signed JWT (JWS) - running validator chain BEFORE token exchange...');
+					let payload: any;
+					let header: any;
+					try {
+						header = JSON.parse(Buffer.from(parts[0], 'base64url').toString());
+						payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
+					} catch (e: any) {
+						console.error('REJECTED: ID token in authorization response is not a parseable JWT:', e.message);
+						throw new Error('Invalid ID token in authorization response: not a parseable JWT');
+					}
+					console.log('ID token header:', JSON.stringify(header));
+					console.log('ID token payload:', JSON.stringify(payload));
+
+					// alg=none rejection
+					if (header.alg && String(header.alg).toLowerCase() === 'none') {
+						console.error('REJECTED: ID token signed with disallowed "none" algorithm');
+						throw new Error('ID token uses disallowed "none" algorithm');
+					}
+					// Algorithms allowed by FAPI Advanced Final: PS256 only (RS256 also commonly allowed in OIDC, but FAPI requires PS256)
+					if (header.alg && header.alg !== 'PS256') {
+						console.error(`REJECTED: ID token signed with disallowed algorithm '${header.alg}'. FAPI requires PS256.`);
+						throw new Error(`ID token uses disallowed algorithm '${header.alg}'`);
+					}
+
+					// Required claim presence
+					if (!payload.iss) {
+						console.error('REJECTED: ID token is missing required "iss" claim');
+						throw new Error('ID token missing iss claim');
+					}
+					if (!payload.aud) {
+						console.error('REJECTED: ID token is missing required "aud" claim');
+						throw new Error('ID token missing aud claim');
+					}
+					if (payload.exp === undefined || payload.exp === null) {
+						console.error('REJECTED: ID token is missing required "exp" claim');
+						throw new Error('ID token missing exp claim');
+					}
+					if (payload.nonce === undefined || payload.nonce === null) {
+						console.error('REJECTED: ID token is missing required "nonce" claim');
+						throw new Error('ID token missing nonce claim');
+					}
+
+					// Signature
+					try {
+						this.validateIdTokenSignature(idToken);
+					} catch (e: any) {
+						console.error('REJECTED: ID token signature verification failed:', e.message);
+						throw e;
+					}
+
+					// Claim validators (these already throw with clear messages)
+					try { this.validateIdTokenIssuer(payload); }
+					catch (e: any) { console.error('REJECTED: ID token issuer mismatch —', e.message); throw e; }
+
+					try { this.validateIdTokenAudience(payload); }
+					catch (e: any) { console.error('REJECTED: ID token audience mismatch —', e.message); throw e; }
+
+					try { this.validateIdTokenExpiration(payload); }
+					catch (e: any) { console.error('REJECTED: ID token expiration check failed —', e.message); throw e; }
+
+					try { this.validateIdTokenIssueTime(payload); }
+					catch (e: any) { console.error('REJECTED: ID token iat (issued-at) check failed —', e.message); throw e; }
+
+					try { this.validateIdTokenNonce(payload); }
+					catch (e: any) { console.error('REJECTED: ID token nonce mismatch —', e.message); throw e; }
+
+					// s_hash and c_hash — validate when present in the redirect.
+					// Missing-s_hash is itself a fail condition for the s_hash test family.
+					const stateFromFragment = redirectUrl.includes('#')
+						? new URLSearchParams(redirectUrl.split('#')[1]).get('state')
+						: new URL(redirectUrl).searchParams.get('state');
+					if (stateFromFragment) {
+						if (payload.s_hash === undefined || payload.s_hash === null) {
+							console.error('REJECTED: ID token is missing required "s_hash" claim (state was returned)');
+							throw new Error('ID token missing s_hash claim');
+						}
+						try { this.validateIdTokenStateHash(payload, stateFromFragment); }
+						catch (e: any) { console.error('REJECTED: ID token s_hash mismatch —', e.message); throw e; }
+					}
+					if (code) {
+						if (payload.c_hash === undefined || payload.c_hash === null) {
+							console.error('REJECTED: ID token is missing required "c_hash" claim (authorization code was returned)');
+							throw new Error('ID token missing c_hash claim');
+						}
+						try { this.validateIdTokenCodeHash(payload, code); }
+						catch (e: any) { console.error('REJECTED: ID token c_hash mismatch —', e.message); throw e; }
+					}
+
+					// Secondary-audience / azp rule per OIDC §3.1.3.7: if aud is an array with >1 entry, azp MUST be present and equal to client_id.
+					if (Array.isArray(payload.aud) && payload.aud.length > 1) {
+						if (!payload.azp) {
+							console.error('REJECTED: ID token has multiple audiences but is missing required "azp" claim');
+							throw new Error('ID token missing azp claim when aud is multi-valued');
+						}
+						if (payload.azp !== this.clientId) {
+							console.error('REJECTED: ID token azp does not match client_id', { expected: this.clientId, received: payload.azp });
+							throw new Error('ID token azp does not match client_id');
+						}
+						// Untrusted secondary audience: every aud entry must be the client_id (per FAPI advanced)
+						const untrusted = payload.aud.filter((a: string) => a !== this.clientId);
+						if (untrusted.length > 0) {
+							console.error('REJECTED: ID token contains untrusted secondary audience(s):', untrusted);
+							throw new Error('ID token contains untrusted secondary audience(s)');
+						}
+					}
+
+					console.log('✓ All ID token claim and signature validations passed');
+				}
+
 				console.log('ID token in authorization response validation passed - proceeding to token exchange...');
 			}
-			
+
 			if (!code) {
 				console.error('Step 1.3: FAILED - Authorization code not found in redirect URL');
 				throw new Error('Authorization code not found in redirect URL');

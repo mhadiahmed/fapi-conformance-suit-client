@@ -13,7 +13,8 @@
     "encrypted-idtoken-test": "npm run build && node dist/run-encrypted-idtoken-test.js",
     "cert-logs": "./run-conformance-logs.sh",
     "cert-logs:fapi": "./run-conformance-logs.sh",
-    "cert-logs:oidcc": "./run-conformance-logs.sh --profile oidcc"
+    "cert-logs:oidcc": "./run-conformance-logs.sh --profile oidcc",
+    "cert-run": "npm run build && node dist/orchestrate-cert.js"
   },
   "keywords": [],
   "author": "",
