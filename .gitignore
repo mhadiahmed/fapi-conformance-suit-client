@@ -145,3 +145,22 @@ dist
 .svelte-kit
 
 # End of https://www.toptal.com/developers/gitignore/api/node
+
+# Certificates and private keys — kept locally only, never pushed.
+src/certs/*
+dist/certs/*
+!src/certs/.gitkeep
+!dist/certs/.gitkeep
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# Build output that may contain copied certs
+dist/
+
+# Submission artefacts (may contain access tokens / JWTs in stdout)
+client-logs/
+client-logs.zip
+log.txt
