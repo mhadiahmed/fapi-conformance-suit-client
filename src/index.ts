@@ -10,8 +10,16 @@ import crypto from 'crypto';
 let client: FAPIClient | null = null;
 let client2: FAPIClient | null = null;
 
-const URLSTREAM = 'https://www.certification.openid.net';
-const URLSTREAM_MTLS = 'https://mtls-www.certification.openid.net';
+import * as dotenv from 'dotenv';
+dotenv.config();
+
+// All of these are env-overridable so this repo is white-label.
+// Defaults match the OpenID Foundation's public hosted conformance suite.
+const URLSTREAM = process.env.SUITE_BASE || 'https://www.certification.openid.net';
+const URLSTREAM_MTLS = process.env.SUITE_MTLS_BASE || 'https://mtls-www.certification.openid.net';
+const TEST_ALIAS = process.env.SUITE_ALIAS || 'ksa-rp-seentarbie';
+const CLIENT_ID = process.env.CLIENT_ID || 'bc680915-bbd3-45d7-b3c6-2716f4d178ed';
+const KEY_ID = process.env.KEY_ID || 'sig1';
 
 // Let's add a helper function instead of using Express
 function getJwksAsJson(): string {
@@ -32,17 +40,17 @@ function getJwksAsJson(): string {
 // Helper function to initialize the FAPI client without running any flow
 async function initializeClient(): Promise<FAPIClient> {
     const config: FAPIClientConfig = {
-        clientId: 'bc680915-bbd3-45d7-b3c6-2716f4d178ed', // Your conformance suite client ID
-        clientSecret: '', // Empty for private_key_jwt
-        tokenEndpoint: `${URLSTREAM_MTLS}/test-mtls/a/ksa-rp-seentarbie/token`, // mTLS endpoint
-        parEndpoint: `${URLSTREAM_MTLS}/test-mtls/a/ksa-rp-seentarbie/par`, // mTLS endpoint
-        issuer: `${URLSTREAM}/test/a/ksa-rp-seentarbie/`, // Note the trailing slash
-        discoveryUrl: `${URLSTREAM}/test/a/ksa-rp-seentarbie/.well-known/openid-configuration`,
-        redirectUri: `${URLSTREAM}/test/a/ksa-rp-seentarbie/callback`,
-        certPath: path.join(__dirname, 'certs/certs.pem'), // Your mTLS certificate
-        keyPath: path.join(__dirname, 'certs/privatekey.key'), // Your mTLS key
-        signingKeyPath: path.join(__dirname, 'certs/private_key.pem'), // JWT signing key for private_key_jwt
-        keyId: 'sig1' // Key ID for JWKS
+        clientId: CLIENT_ID,
+        clientSecret: '',
+        tokenEndpoint: `${URLSTREAM_MTLS}/test-mtls/a/${TEST_ALIAS}/token`,
+        parEndpoint: `${URLSTREAM_MTLS}/test-mtls/a/${TEST_ALIAS}/par`,
+        issuer: `${URLSTREAM}/test/a/${TEST_ALIAS}/`,
+        discoveryUrl: `${URLSTREAM}/test/a/${TEST_ALIAS}/.well-known/openid-configuration`,
+        redirectUri: `${URLSTREAM}/test/a/${TEST_ALIAS}/callback`,
+        certPath: path.join(__dirname, 'certs/certs.pem'),
+        keyPath: path.join(__dirname, 'certs/privatekey.key'),
+        signingKeyPath: path.join(__dirname, 'certs/private_key.pem'),
+        keyId: KEY_ID
     };
 
     const newClient = new FAPIClient(config);
@@ -68,18 +76,18 @@ async function initializeClient(): Promise<FAPIClient> {
 // Helper function to initialize the FAPI client2 for encrypted ID token tests
 async function initializeClient2(): Promise<FAPIClient> {
     const config: FAPIClientConfig = {
-        clientId: '06f42d27-c86b-481a-a134-18cf5e0d1e9c', // Client2 ID from conformance config
-        clientSecret: '', // Empty for private_key_jwt
-        tokenEndpoint: `${URLSTREAM_MTLS}/test-mtls/a/ksa-rp-seentarbie/token`, // mTLS endpoint
-        parEndpoint: `${URLSTREAM_MTLS}/test-mtls/a/ksa-rp-seentarbie/par`, // mTLS endpoint
-        issuer: `${URLSTREAM}/test/a/ksa-rp-seentarbie/`, // Note the trailing slash
-        discoveryUrl: `${URLSTREAM}/test/a/ksa-rp-seentarbie/.well-known/openid-configuration`,
-        redirectUri: `${URLSTREAM}/test/a/ksa-rp-seentarbie/callback`,
-        certPath: path.join(__dirname, 'certs/certs.pem'), // Your mTLS certificate
-        keyPath: path.join(__dirname, 'certs/privatekey.key'), // Your mTLS key
-        signingKeyPath: path.join(__dirname, 'certs/client2_signing_key.pem'), // Client2 JWT signing key
-        encryptionKeyPath: path.join(__dirname, 'certs/client2_encryption_key.pem'), // Client2 encryption key for decrypting ID tokens
-        keyId: 'sig2' // Key ID for client2 JWKS
+        clientId: process.env.CLIENT2_ID || '06f42d27-c86b-481a-a134-18cf5e0d1e9c',
+        clientSecret: '',
+        tokenEndpoint: `${URLSTREAM_MTLS}/test-mtls/a/${TEST_ALIAS}/token`,
+        parEndpoint: `${URLSTREAM_MTLS}/test-mtls/a/${TEST_ALIAS}/par`,
+        issuer: `${URLSTREAM}/test/a/${TEST_ALIAS}/`,
+        discoveryUrl: `${URLSTREAM}/test/a/${TEST_ALIAS}/.well-known/openid-configuration`,
+        redirectUri: `${URLSTREAM}/test/a/${TEST_ALIAS}/callback`,
+        certPath: path.join(__dirname, 'certs/certs.pem'),
+        keyPath: path.join(__dirname, 'certs/privatekey.key'),
+        signingKeyPath: path.join(__dirname, 'certs/client2_signing_key.pem'),
+        encryptionKeyPath: path.join(__dirname, 'certs/client2_encryption_key.pem'),
+        keyId: process.env.CLIENT2_KEY_ID || 'sig2'
     };
 
     const newClient = new FAPIClient(config);
