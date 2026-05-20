@@ -161,6 +161,7 @@ dist
 # *.pfx
 src/certs/frn-key.key
 src/certs/*
+conformance-config.json
 # Build output (rebuild locally — copies certs from src/certs/)
 dist/
 
