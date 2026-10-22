@@ -83,7 +83,31 @@ const MODULE_TO_CLI: Record<string, string> = {
     'fapi1-advanced-final-client-test-token-response-missing-fields': 'missing-fields',
     'fapi1-advanced-final-client-test-encrypted-idtoken': 'encrypted-idtoken',
     'fapi1-advanced-final-client-test-encrypted-idtoken-usingrsa15': 'encrypted-rsa15',
-    'fapi1-advanced-final-client-refresh-token-test': 'refresh-token'
+    'fapi1-advanced-final-client-refresh-token-test': 'refresh-token',
+
+    // FAPI2 Message Signing Final (SAMA KSA) — run the CLI with FAPI_VERSION=2 (default).
+    'fapi2-security-profile-final-client-test-happy-path': 'happy-path',
+    'fapi2-security-profile-final-client-test-discovery-issuer-mismatch': 'discovery-issuer-mismatch',
+    'fapi2-security-profile-final-client-test-invalid-iss': 'invalid-issuer',
+    'fapi2-security-profile-final-client-test-invalid-aud': 'invalid-audience',
+    'fapi2-security-profile-final-client-test-invalid-secondary-aud': 'invalid-secondary-aud',
+    'fapi2-security-profile-final-client-test-invalid-null-alg': 'invalid-null-alg',
+    'fapi2-security-profile-final-client-test-invalid-alternate-alg': 'invalid-alternate-alg',
+    'fapi2-security-profile-final-client-test-invalid-expired-exp': 'invalid-expired-exp',
+    'fapi2-security-profile-final-client-test-invalid-missing-exp': 'invalid-missing-exp',
+    'fapi2-security-profile-final-client-test-invalid-missing-aud': 'invalid-missing-aud',
+    'fapi2-security-profile-final-client-test-invalid-missing-iss': 'invalid-missing-iss',
+    'fapi2-security-profile-final-client-test-valid-aud-as-array': 'happy-path',
+    'fapi2-security-profile-final-client-test-invalid-nonce': 'invalid-nonce',
+    'fapi2-security-profile-final-client-test-invalid-missing-nonce': 'invalid-missing-nonce',
+    'fapi2-security-profile-final-client-test-invalid-authorization-response-iss': 'invalid-authorization-response-iss',
+    'fapi2-security-profile-final-client-test-remove-authorization-response-iss': 'remove-authorization-response-iss',
+    'fapi2-security-profile-final-client-test-ensure-authorization-response-with-invalid-state-fails': 'invalid-state',
+    'fapi2-security-profile-final-client-test-ensure-authorization-response-with-invalid-missing-state-fails': 'invalid-missing-state',
+    'fapi2-security-profile-final-client-test-token-endpoint-response-without-expires_in': 'token-endpoint-response-without-expires-in',
+    'fapi2-security-profile-final-client-test-token-type-case-insensitivity': 'token-type-case-insensitivity',
+    'fapi2-security-profile-final-client-test-happy-path-no-mtls-endpoint-aliases': 'happy-path-no-mtls-endpoint-aliases',
+    'fapi2-security-profile-final-client-refresh-token-test': 'refresh-token'
 };
 
 // --- API client -----------------------------------------------------------

@@ -20,6 +20,9 @@ export interface FAPIClientConfig {
 	redirectUri?: string;
 	keyId?: string;
 	jwks?: any;
+	// '1' = FAPI1 Advanced (hybrid `code id_token`), '2' = FAPI2 Security Profile /
+	// Message Signing (plain `code` + PAR/JAR, endpoints taken from discovery).
+	fapiVersion?: '1' | '2';
 }
 
 export class FAPIClient {
@@ -39,6 +42,11 @@ export class FAPIClient {
 	private state: string = '';
 	private authorizationCode: string = '';
 	private codeVerifier: string = '';
+	private fapiVersion: '1' | '2';
+	// Exact issuer string from the (validated) discovery document. FAPI2 requires
+	// this exact value for the client assertion aud and the authorization response iss.
+	private discoveredIssuer: string = '';
+	private authorizationEndpoint: string = '';
 
 	// Update the hardcoded JWKS to match the plan configuration (CLIENT's JWKS)
 	private readonly jwks = {
@@ -79,6 +87,7 @@ export class FAPIClient {
 		this.requestedScopes = [];
 		this.expectedNonce = '';
 		this.keyId = config.keyId || 'f4706d18-bf16-43ce-b181-90b4128ca215';
+		this.fapiVersion = config.fapiVersion || '1';
 
 		// Validate required configuration
 		if (!this.clientId) {
@@ -390,7 +399,8 @@ export class FAPIClient {
 		const payload = {
 			iss: this.config.clientId,
 			sub: this.config.clientId,
-			aud: audience,
+			// FAPI2: aud MUST be the issuer identifier as a single string, exactly as discovered.
+			aud: this.fapiVersion === '2' && this.discoveredIssuer ? this.discoveredIssuer : audience,
 			jti: crypto.randomUUID(),
 			exp: now + 300, // Expires in 5 minutes
 			iat: now
@@ -424,11 +434,11 @@ export class FAPIClient {
 		const now = Math.floor(Date.now() / 1000);
 		const payload = {
 			iss: this.clientId,
-			aud: this.config.issuer, // Use the configured issuer as the audience
+			aud: this.fapiVersion === '2' && this.discoveredIssuer ? this.discoveredIssuer : this.config.issuer,
 			iat: now,
-			exp: now + 600,
+			exp: now + 600, // KSA: exp - nbf must not exceed 60 minutes
 			nbf: now,
-			response_type: 'code id_token',
+			response_type: this.fapiVersion === '2' ? 'code' : 'code id_token',
 			code_challenge_method: 'S256',
 			nonce: this.expectedNonce,
 			client_id: this.clientId,
@@ -699,6 +709,7 @@ export class FAPIClient {
 					this.validateIdTokenNonce(payload);
 					this.validateIdTokenIssuer(payload);
 					this.validateIdTokenAudience(payload);
+					this.validateIdTokenAuthorizedParty(payload);
 					this.validateIdTokenExpiration(payload);
 					this.validateIdTokenIssueTime(payload); // Validate the iat claim
 					this.logConformanceTestInteraction('FAPI Conformance: ID token validation successful');
@@ -726,6 +737,9 @@ export class FAPIClient {
 	}
 
 	public async createAccountConsentRequest(): Promise<any> {
+		if (this.fapiVersion === '2') {
+			return this.createKsaSignedAccountConsentRequest();
+		}
 		if (!this.config.issuer) {
 			throw new Error('Issuer must be configured');
 		}
@@ -787,6 +801,66 @@ export class FAPIClient {
 			console.error('Account consent request failed:', error);
 			throw error;
 		}
+	}
+
+	// KSA (FAPI2 profile): the consent is created by POSTing a signed JWT
+	// (application/jwt) whose `message` claim carries the OBReadConsent body; the
+	// response is a JWT signed by the server whose `message` carries the consent.
+	public async createKsaSignedAccountConsentRequest(): Promise<any> {
+		if (!this.config.issuer) {
+			throw new Error('Issuer must be configured');
+		}
+		const issuerMatch = this.config.issuer.match(/\/test\/a\/([^\/]+)/);
+		if (!issuerMatch) {
+			throw new Error(`Cannot extract test alias from issuer: ${this.config.issuer}`);
+		}
+		const consentEndpoint = `https://mtls-www.certification.openid.net/test-mtls/a/${issuerMatch[1]}/open-banking/v1.1/account-request`;
+
+		const now = Math.floor(Date.now() / 1000);
+		const signedRequest = this.signJWT({
+			iss: this.clientId,
+			aud: this.discoveredIssuer || this.config.issuer,
+			iat: now,
+			nbf: now,
+			exp: now + 300,
+			jti: crypto.randomUUID(),
+			message: {
+				Data: {
+					Permissions: ['ReadAccountsBasic', 'ReadAccountsDetail', 'ReadBalances'],
+					TransactionFromDateTime: '2016-01-01T10:40:00+02:00',
+					TransactionToDateTime: '2025-12-31T10:40:00+02:00',
+					ExpirationDateTime: new Date(Date.now() + 365 * 86400 * 1000).toISOString()
+				}
+			}
+		});
+		if (!signedRequest) {
+			throw new Error('Failed to sign KSA consent request');
+		}
+
+		const interactionId = crypto.randomUUID();
+		const response = await axios({
+			method: 'post',
+			url: consentEndpoint,
+			headers: {
+				'Content-Type': 'application/jwt',
+				'Accept': 'application/jwt',
+				'x-fapi-interaction-id': interactionId,
+				'Authorization': `Bearer ${await this.getClientCredentialsTokenForConsent()}`
+			},
+			data: signedRequest,
+			httpsAgent: this.httpsAgent,
+			responseType: 'text'
+		});
+
+		const signedResponse = String(response.data).trim();
+		this.validateIdTokenSignature(signedResponse);
+		const claims = JSON.parse(Buffer.from(signedResponse.split('.')[1], 'base64url').toString());
+		const expectedIss = this.discoveredIssuer || this.config.issuer;
+		if (claims.iss !== expectedIss) {
+			throw new Error(`KSA consent response iss mismatch (expected ${expectedIss}, got ${claims.iss})`);
+		}
+		console.log('KSA consent response x-fapi-interaction-id:', response.headers['x-fapi-interaction-id'], '(sent', interactionId + ')');
+		return claims.message;
 	}
 
 	private async getClientCredentialsTokenForConsent(): Promise<string> {
@@ -967,8 +1041,11 @@ export class FAPIClient {
 			throw error;
 		}
 
-		// Find the key with the matching kid
-		const serverKey = this.serverJwks.keys.find((key: any) => key.kid === header.kid);
+		// Find the key with the matching kid. Servers may publish several keys sharing a
+		// kid (e.g. EdDSA + RSA) or unusable decoys, so also match key type and alg.
+		const serverKey = this.serverJwks.keys.find((key: any) =>
+			key.kid === header.kid && key.kty === 'RSA' && (!key.alg || key.alg === header.alg)
+			&& (!key.use || key.use === 'sig'));
 		if (!serverKey) {
 			const error = new Error(`No server key found with kid: ${header.kid}`);
 			console.error(error.message);
@@ -1050,6 +1127,9 @@ export class FAPIClient {
 			});
 
 			this.validateDiscoveryIssuer(discoveryResponse.data);
+			if (this.fapiVersion === '2') {
+				this.applyDiscoveredEndpoints(discoveryResponse.data);
+			}
 
 			const jwksUri = discoveryResponse.data.jwks_uri;
 			if (!jwksUri) {
@@ -1068,6 +1148,73 @@ export class FAPIClient {
 			console.error('Failed to fetch server JWKS:', error);
 			throw new Error('Could not fetch server JWKS for ID token validation');
 		}
+	}
+
+	// RFC 8705 §5: when mtls_endpoint_aliases is advertised, a client using mTLS
+	// MUST use the aliased endpoints; otherwise the plain endpoints are used.
+	private applyDiscoveredEndpoints(discoveryDoc: any): void {
+		const aliases = discoveryDoc.mtls_endpoint_aliases || {};
+		this.discoveredIssuer = discoveryDoc.issuer;
+		this.tokenEndpoint = aliases.token_endpoint || discoveryDoc.token_endpoint || this.tokenEndpoint;
+		this.parEndpoint = aliases.pushed_authorization_request_endpoint
+			|| discoveryDoc.pushed_authorization_request_endpoint || this.parEndpoint;
+		this.authorizationEndpoint = discoveryDoc.authorization_endpoint || '';
+		console.log('Discovered endpoints:', {
+			issuer: this.discoveredIssuer,
+			mtls_endpoint_aliases: !!discoveryDoc.mtls_endpoint_aliases,
+			token_endpoint: this.tokenEndpoint,
+			par_endpoint: this.parEndpoint,
+			authorization_endpoint: this.authorizationEndpoint
+		});
+	}
+
+	// OIDC §3.1.3.7 + FAPI: a multi-valued aud must carry azp = client_id, and
+	// every audience must be trusted (only our client_id).
+	public validateIdTokenAuthorizedParty(idToken: any): void {
+		if (!Array.isArray(idToken.aud) || idToken.aud.length <= 1) {
+			return;
+		}
+		if (!idToken.azp) {
+			throw new Error('ID token missing azp claim when aud is multi-valued');
+		}
+		if (idToken.azp !== this.clientId) {
+			throw new Error('ID token azp does not match client_id');
+		}
+		const untrusted = idToken.aud.filter((a: string) => a !== this.clientId);
+		if (untrusted.length > 0) {
+			throw new Error(`ID token contains untrusted secondary audience(s): ${untrusted.join(', ')}`);
+		}
+	}
+
+	// RFC 9207 + RFC 6749 §10.12: the authorization response must carry the exact
+	// issuer we started the flow with and the state we sent.
+	public validateAuthorizationResponse(params: URLSearchParams): void {
+		const error = params.get('error');
+		if (error) {
+			throw new Error(`Authorization server returned error: ${error} ${params.get('error_description') || ''}`.trim());
+		}
+
+		const state = params.get('state');
+		if (!state) {
+			console.error('REJECTED: authorization response is missing "state"');
+			throw new Error('Authorization response missing state');
+		}
+		if (state !== this.state) {
+			console.error('REJECTED: authorization response state mismatch', { expected: this.state, received: state });
+			throw new Error('Authorization response state does not match the state sent');
+		}
+
+		const iss = params.get('iss');
+		const expectedIss = this.discoveredIssuer || this.config.issuer;
+		if (!iss) {
+			console.error('REJECTED: authorization response is missing "iss" (RFC 9207)');
+			throw new Error('Authorization response missing iss');
+		}
+		if (iss !== expectedIss) {
+			console.error('REJECTED: authorization response iss mismatch (RFC 9207)', { expected: expectedIss, received: iss });
+			throw new Error('Authorization response iss does not match the issuer');
+		}
+		console.log('✓ Authorization response state and iss validated');
 	}
 
 	// Method to detect if an ID token is encrypted
@@ -1193,7 +1340,7 @@ export class FAPIClient {
 		}
 		
 		// Ensure the authorization endpoint URL is correctly formed
-		const baseUrl = this.config.issuer.endsWith('/') 
+		const baseUrl = this.authorizationEndpoint ? this.authorizationEndpoint : this.config.issuer.endsWith('/') 
 			? this.config.issuer + 'authorize' 
 			: this.config.issuer + '/authorize';
 		
@@ -2386,6 +2533,9 @@ export class FAPIClient {
 				console.log('Step 1.2: URL contains query parameters (?) - extracting from query...');
 				// Extract from URL query parameters
 				const urlObj = new URL(redirectUrl);
+				if (this.fapiVersion === '2') {
+					this.validateAuthorizationResponse(urlObj.searchParams);
+				}
 				code = urlObj.searchParams.get('code');
 				idToken = urlObj.searchParams.get('id_token');
 				console.log('Extracted code from URL query parameters:', code ? code.substring(0, 10) + '...' : 'null');

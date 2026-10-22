@@ -20,6 +20,22 @@ const URLSTREAM_MTLS = process.env.SUITE_MTLS_BASE || 'https://mtls-www.certific
 const TEST_ALIAS = process.env.SUITE_ALIAS || 'ksa-rp-seentarbie';
 const CLIENT_ID = process.env.CLIENT_ID || 'bc680915-bbd3-45d7-b3c6-2716f4d178ed';
 const KEY_ID = process.env.KEY_ID || 'sig1';
+// '2' = FAPI2 Message Signing (SAMA KSA, current); '1' = legacy FAPI1 Advanced.
+const FAPI_VERSION: '1' | '2' = process.env.FAPI_VERSION === '1' ? '1' : '2';
+const MODULE_PREFIX = FAPI_VERSION === '2' ? 'fapi2-security-profile-final-client-test' : 'fapi1-advanced-final-client-test';
+
+// Conformance-suite module name for a test suffix, e.g. moduleName('invalid-iss').
+function moduleName(suffix: string): string {
+    return `${MODULE_PREFIX}-${suffix}`;
+}
+
+// FAPI headers sent on every resource call; the server echoes x-fapi-interaction-id.
+function fapiResourceHeaders(accessToken: string): Record<string, string> {
+    return {
+        'Authorization': `Bearer ${accessToken}`,
+        'x-fapi-interaction-id': crypto.randomUUID()
+    };
+}
 
 // Let's add a helper function instead of using Express
 function getJwksAsJson(): string {
@@ -50,7 +66,8 @@ async function initializeClient(): Promise<FAPIClient> {
         certPath: path.join(__dirname, 'certs/certs.pem'),
         keyPath: path.join(__dirname, 'certs/privatekey.key'),
         signingKeyPath: path.join(__dirname, 'certs/private_key.pem'),
-        keyId: KEY_ID
+        keyId: KEY_ID,
+        fapiVersion: FAPI_VERSION
     };
 
     const newClient = new FAPIClient(config);
@@ -201,10 +218,10 @@ async function runNegativeTest(testName: string): Promise<void> {
     }
 }
 
-// CLI helper for the HAPPY PATH (fapi1-advanced-final-client-test).
+// CLI helper for the HAPPY PATH (and the FAPI2 positive variants that share it).
 // Runs the live flow, then calls the resource endpoint and expects 200.
 async function runHappyPath(resourceEndpoint: string): Promise<void> {
-    console.log('\n==== HAPPY PATH TEST: fapi1-advanced-final-client-test ====');
+    console.log(`\n==== HAPPY PATH TEST: ${MODULE_PREFIX} (FAPI${FAPI_VERSION}) ====`);
     console.log('Expectation: full OAuth/OIDC flow completes; resource endpoint returns 200.\n');
     try {
         const c = await main();
@@ -214,10 +231,11 @@ async function runHappyPath(resourceEndpoint: string): Promise<void> {
         }
         console.log('Step 4: Calling resource endpoint with access token...');
         const resourceResponse = await axios.get(resourceEndpoint, {
-            headers: { 'Authorization': `Bearer ${tokenResponse.access_token}` },
+            headers: fapiResourceHeaders(tokenResponse.access_token),
             httpsAgent: buildMtlsAgent()
         });
         console.log('Resource endpoint response status:', resourceResponse.status);
+        console.log('Resource x-fapi-interaction-id:', resourceResponse.headers['x-fapi-interaction-id']);
         if (resourceResponse.status === 200) {
             console.log('\n✓ Test PASSED: Happy path completed; resource endpoint returned 200.');
             process.exit(0);
@@ -1106,9 +1124,7 @@ async function testRefreshTokenFlow(discoveryUrl: string, resourceEndpoint: stri
         let resourceResponse;
         try {
             resourceResponse = await axios.get(resourceEndpoint, {
-                headers: {
-                    'Authorization': `Bearer ${tokenResponse.access_token}`
-                },
+                headers: fapiResourceHeaders(tokenResponse.access_token),
                 httpsAgent
             });
             console.log('Resource endpoint response status:', resourceResponse.status);
@@ -1129,22 +1145,22 @@ async function testRefreshTokenFlow(discoveryUrl: string, resourceEndpoint: stri
             const firstRefreshResponse = await client.refreshAccessToken(tokenResponse.refresh_token);
             console.log('First refresh token response:', firstRefreshResponse);
 
-            if (!firstRefreshResponse.refresh_token) {
-                throw new Error('First refresh token response did not return a new refresh token');
-            }
+            // KSA/FAPI2: refresh tokens are normally NOT rotated — keep using the
+            // original one unless the server explicitly issued a replacement.
+            const nextRefreshToken = firstRefreshResponse.refresh_token || tokenResponse.refresh_token;
+            console.log(firstRefreshResponse.refresh_token
+                ? 'Server rotated the refresh token; using the new one.'
+                : 'No new refresh token returned (no rotation); reusing the original.');
 
-            console.log('Performing second refresh token call with new refresh token...');
-            console.log('Using new refresh token:', firstRefreshResponse.refresh_token.substring(0, 10) + '...');
-            const secondRefreshResponse = await client.refreshAccessToken(firstRefreshResponse.refresh_token);
+            console.log('Performing second refresh token call...');
+            const secondRefreshResponse = await client.refreshAccessToken(nextRefreshToken);
             console.log('Second refresh token response:', secondRefreshResponse);
 
             // Step 5: Retry resource endpoint with new access token
             console.log('Step 5: Retrying resource endpoint with new access token...');
             console.log('Using new access token:', secondRefreshResponse.access_token.substring(0, 10) + '...');
             const retryResponse = await axios.get(resourceEndpoint, {
-                headers: {
-                    'Authorization': `Bearer ${secondRefreshResponse.access_token}`
-                },
+                headers: fapiResourceHeaders(secondRefreshResponse.access_token),
                 httpsAgent
             });
             console.log('Retry resource endpoint response status:', retryResponse.status);
@@ -1888,7 +1904,12 @@ function processArgs() {
         console.log('  invalid-c-hash        - Test invalid c_hash detection');
         console.log('  no-scope              - Test token response with missing scope and expires_in - requires discoveryUrl and resourceEndpoint');
         console.log('  missing-fields        - Test token response with missing scope and expires_in');
-        console.log('  happy-path            - Test complete happy path flow (for fapi1-advanced-final-client-test)');
+        console.log('  happy-path            - Test complete happy path flow (FAPI_VERSION=2 default, 1 for legacy FAPI1)');
+        console.log('  happy-path-no-mtls-endpoint-aliases / token-endpoint-response-without-expires-in /');
+        console.log('  token-type-case-insensitivity                 - FAPI2 positive variants of the happy path');
+        console.log('  invalid-authorization-response-iss / remove-authorization-response-iss');
+        console.log('                                                - FAPI2: authorization response iss wrong or missing');
+        console.log('  invalid-state / invalid-missing-state         - FAPI2: authorization response state wrong or missing');
         console.log('  refresh-token-flow    - Test refresh token flow with URL and resource endpoint');
         console.log('  invalid-nonce         - Test invalid nonce detection');
         console.log('  old-iat               - Test ID token with iat more than a week in the past');
@@ -1902,7 +1923,10 @@ function processArgs() {
     const testType = args[0];
     
     switch (testType.toLowerCase()) {
-        case 'happy-path': {
+        case 'happy-path':
+        case 'happy-path-no-mtls-endpoint-aliases':
+        case 'token-endpoint-response-without-expires-in':
+        case 'token-type-case-insensitivity': {
             const url = args[1];
             const endpoint = args[2];
             if (!url || !endpoint) {
@@ -1934,10 +1958,10 @@ function processArgs() {
             break;
         }
         case 'invalid-issuer':
-            runNegativeTest('fapi1-advanced-final-client-test-invalid-iss');
+            runNegativeTest(moduleName('invalid-iss'));
             break;
         case 'invalid-missing-iss':
-            runNegativeTest('fapi1-advanced-final-client-test-invalid-missing-iss');
+            runNegativeTest(moduleName('invalid-missing-iss'));
             break;
         case 'discovery-issuer-mismatch':
             // Live: validateDiscoveryIssuer (wired into fetchServerJwks) rejects when the
@@ -1952,48 +1976,48 @@ function processArgs() {
                 process.exit(ok ? 0 : 1);
             }).catch(err => {
                 const msg = err?.message || String(err);
-                console.log('\n✓ Test PASSED: fapi1-advanced-final-client-test-discovery-issuer-mismatch — client rejected the discovery document.');
+                console.log(`\n✓ Test PASSED: ${moduleName('discovery-issuer-mismatch')} — client rejected the discovery document.`);
                 console.log('  Rejection reason:', msg);
                 process.exit(0);
             });
             break;
         case 'invalid-audience':
-            runNegativeTest('fapi1-advanced-final-client-test-invalid-aud');
+            runNegativeTest(moduleName('invalid-aud'));
             break;
         case 'invalid-missing-aud':
-            runNegativeTest('fapi1-advanced-final-client-test-invalid-missing-aud');
+            runNegativeTest(moduleName('invalid-missing-aud'));
             break;
         case 'invalid-secondary-aud':
-            runNegativeTest('fapi1-advanced-final-client-test-invalid-secondary-aud');
+            runNegativeTest(moduleName('invalid-secondary-aud'));
             break;
         case 'invalid-signature':
-            runNegativeTest('fapi1-advanced-final-client-test-invalid-signature');
+            runNegativeTest(moduleName('invalid-signature'));
             break;
         case 'none-algorithm':
         case 'invalid-null-alg':
-            runNegativeTest('fapi1-advanced-final-client-test-invalid-null-alg');
+            runNegativeTest(moduleName('invalid-null-alg'));
             break;
         case 'invalid-alternate-alg':
-            runNegativeTest('fapi1-advanced-final-client-test-invalid-alternate-alg');
+            runNegativeTest(moduleName('invalid-alternate-alg'));
             break;
         case 'expired-exp':
         case 'invalid-expired-exp':
-            runNegativeTest('fapi1-advanced-final-client-test-invalid-expired-exp');
+            runNegativeTest(moduleName('invalid-expired-exp'));
             break;
         case 'missing-exp':
         case 'invalid-missing-exp':
-            runNegativeTest('fapi1-advanced-final-client-test-invalid-missing-exp');
+            runNegativeTest(moduleName('invalid-missing-exp'));
             break;
         case 'invalid-s-hash':
         case 'invalid-shash':
-            runNegativeTest('fapi1-advanced-final-client-test-invalid-shash');
+            runNegativeTest(moduleName('invalid-shash'));
             break;
         case 'invalid-missing-shash':
-            runNegativeTest('fapi1-advanced-final-client-test-invalid-missing-shash');
+            runNegativeTest(moduleName('invalid-missing-shash'));
             break;
         case 'invalid-c-hash':
         case 'invalid-chash':
-            runNegativeTest('fapi1-advanced-final-client-test-invalid-chash');
+            runNegativeTest(moduleName('invalid-chash'));
             break;
         case 'no-scope':
         case 'no-scope-expires': {
@@ -2026,15 +2050,27 @@ function processArgs() {
                 process.exit(1);
             });
             break;
+        case 'invalid-authorization-response-iss':
+            runNegativeTest(moduleName('invalid-authorization-response-iss'));
+            break;
+        case 'remove-authorization-response-iss':
+            runNegativeTest(moduleName('remove-authorization-response-iss'));
+            break;
+        case 'invalid-state':
+            runNegativeTest(moduleName('ensure-authorization-response-with-invalid-state-fails'));
+            break;
+        case 'invalid-missing-state':
+            runNegativeTest(moduleName('ensure-authorization-response-with-invalid-missing-state-fails'));
+            break;
         case 'invalid-nonce':
-            runNegativeTest('fapi1-advanced-final-client-test-invalid-nonce');
+            runNegativeTest(moduleName('invalid-nonce'));
             break;
         case 'invalid-missing-nonce':
-            runNegativeTest('fapi1-advanced-final-client-test-invalid-missing-nonce');
+            runNegativeTest(moduleName('invalid-missing-nonce'));
             break;
         case 'old-iat':
         case 'iat-is-week-in-past':
-            runNegativeTest('fapi1-advanced-final-client-test-iat-is-week-in-past');
+            runNegativeTest(moduleName('iat-is-week-in-past'));
             break;
         case 'missing-at-hash':
             const atHashDiscoveryUrl = args[1];
